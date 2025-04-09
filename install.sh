@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# :project:    Nedara Connect
+# :version:    0.1.0-alpha
+# :license:    MIT
+# :copyright:  (c) 2025 Nedara Project
+# :author:     Andrea Ulliana
+
 INSTALL_PATH="$HOME/.local/bin"
 SCRIPT_NAME="nedara-connect"
 SCRIPT_FILE="$INSTALL_PATH/$SCRIPT_NAME"

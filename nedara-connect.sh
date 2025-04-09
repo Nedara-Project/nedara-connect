@@ -1,5 +1,17 @@
 #!/bin/bash
 
+# :project:    Nedara Connect
+# :version:    0.1.0-alpha
+# :license:    MIT
+# :copyright:  (c) 2025 Nedara Project
+# :author:     Andrea Ulliana
+
+# :repository: https://github.com/Nedara-Project/nedara-connect
+# :overview:   Nedara-connect is a lightweight shell tool for managing and connecting to SSH hosts
+
+# :published:  2025-04-08
+# :modified:   2025-04-09
+
 CONFIG_FILE="$HOME/.ssh/connections.conf"
 CONFIG_DIR="$HOME/.ssh"
 
