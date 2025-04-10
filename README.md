@@ -43,7 +43,7 @@ source ~/.bashrc    # or source ~/.zshrc
 You can also install it using the bundled installer:
 
 ```bash
-curl -s https://raw.githubusercontent.com/Nedara-Project/nedara-connect/main/install.sh | bash
+curl -s https://raw.githubusercontent.com/Nedara-Project/nedara-connect/main/install.sh | bash -
 ```
 
 *(Make sure `install.sh` exists in the repo — see below.)*
