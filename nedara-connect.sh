@@ -1,6 +1,6 @@
 #!/bin/bash
 # :project:    Nedara Connect
-# :version:    0.3.0-alpha
+# :version:    0.3.1-alpha
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
@@ -13,6 +13,10 @@
 CONFIG_FILE="$HOME/.ssh/connections.conf"
 PASS_FILE="$HOME/.ssh/connections_pass.gpg"
 CONFIG_DIR="$HOME/.ssh"
+
+# Configure GPG properly
+export GPG_TTY=$(tty)
+gpgconf --launch gpg-agent >/dev/null 2>&1
 
 # Colors and formatting
 RED='\033[0;31m'
@@ -52,7 +56,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.3.0${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.3.1${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
@@ -125,7 +129,7 @@ connection_exists() {
 # Function to decrypt passwords file
 decrypt_passwords() {
     if [ -s "$PASS_FILE" ]; then
-        gpg --quiet --decrypt "$PASS_FILE" 2>/dev/null
+        gpg --batch --pinentry-mode loopback --quiet --decrypt "$PASS_FILE" 2>/dev/null
     else
         echo ""
     fi
@@ -134,7 +138,7 @@ decrypt_passwords() {
 # Function to encrypt passwords file
 encrypt_passwords() {
     local content=$1
-    echo "$content" | gpg --symmetric --yes --quiet --output "$PASS_FILE" 2>/dev/null
+    echo "$content" | gpg --batch --pinentry-mode loopback --yes --quiet --output "$PASS_FILE" --symmetric 2>/dev/null
     chmod 600 "$PASS_FILE"
 }
 

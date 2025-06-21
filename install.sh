@@ -1,6 +1,6 @@
 #!/bin/bash
 # :project:    Nedara Connect Installer
-# :version:    0.3.0-alpha
+# :version:    0.3.1-alpha
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
@@ -50,7 +50,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.3.0${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.3.1${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
