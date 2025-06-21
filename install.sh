@@ -1,6 +1,6 @@
 #!/bin/bash
 # :project:    Nedara Connect Installer
-# :version:    0.2.0-alpha
+# :version:    0.3.0-alpha
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
@@ -36,6 +36,8 @@ ICON_INSTALL="🔧"
 ICON_ROCKET="🚀"
 ICON_FOLDER="📁"
 ICON_SHELL="🐚"
+ICON_LOCK="🔒"
+ICON_WARNING="⚠️ "
 
 # Function to print colored output
 print_color() {
@@ -48,7 +50,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.2.0${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.3.0${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
@@ -74,6 +76,11 @@ print_info() {
     print_color "$BLUE" "${ICON_INFO} $1"
 }
 
+# Function to print warning message
+print_warning() {
+    print_color "$YELLOW$BOLD" "${ICON_WARNING} $1"
+}
+
 # Function to print step
 print_step() {
     print_color "$PURPLE$BOLD" "${1} ${2}"
@@ -84,27 +91,78 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Function to install package
+install_package() {
+    local pkg=$1
+    print_info "Attempting to install $pkg..."
+
+    if command_exists apt-get; then
+        sudo apt-get install -y "$pkg"
+    elif command_exists yum; then
+        sudo yum install -y "$pkg"
+    elif command_exists brew; then
+        brew install "$pkg"
+    elif command_exists pacman; then
+        sudo pacman -S --noconfirm "$pkg"
+    else
+        print_warning "Cannot install $pkg automatically - please install it manually"
+        return 1
+    fi
+}
+
+# Function to check and install dependencies
+check_dependencies() {
+    local missing=0
+    local required=("curl" "ssh")
+    local recommended=("gpg" "sshpass")
+
+    print_step "$ICON_INSTALL" "Checking system requirements..."
+    echo
+
+    # Check required dependencies
+    for dep in "${required[@]}"; do
+        if ! command_exists "$dep"; then
+            print_error "Required dependency missing: $dep"
+            if ! install_package "$dep"; then
+                missing=$((missing + 1))
+            fi
+        fi
+    done
+
+    # Check recommended dependencies
+    for dep in "${recommended[@]}"; do
+        if ! command_exists "$dep"; then
+            print_warning "Recommended dependency missing: $dep (needed for password storage)"
+            print_info "Would you like to install it now? [y/N]"
+            read -r answer
+            if [[ "$answer" =~ ^[Yy]$ ]]; then
+                if ! install_package "$dep"; then
+                    print_warning "Failed to install $dep - password storage won't be available"
+                fi
+            else
+                print_info "Skipping $dep installation - password storage won't be available"
+            fi
+        fi
+    done
+
+    if [ "$missing" -gt 0 ]; then
+        print_error "Cannot proceed without required dependencies"
+        exit 1
+    fi
+
+    print_success "All dependencies verified"
+    echo
+}
+
 # Main installation function
 install_nedara_connect() {
     print_header
+
+    # Check dependencies first
+    check_dependencies
+
     print_step "$ICON_INSTALL" "Starting Nedara Connect installation..."
     print_divider
-
-    # Check for required commands
-    print_info "Checking system requirements..."
-
-    if ! command_exists curl; then
-        print_error "curl is required but not installed. Please install curl first."
-        exit 1
-    fi
-
-    if ! command_exists ssh; then
-        print_error "SSH client is required but not installed. Please install openssh-client."
-        exit 1
-    fi
-
-    print_success "System requirements satisfied"
-    echo
 
     # Create installation directory
     print_step "$ICON_FOLDER" "Creating installation directory..."
@@ -172,6 +230,23 @@ install_nedara_connect() {
     print_divider
     print_info "Script installed to: ${GREEN}$SCRIPT_FILE"
     print_info "Configuration will be stored in: ${GREEN}$HOME/.ssh/connections.conf"
+    print_info "Encrypted passwords will be stored in: ${GREEN}$HOME/.ssh/connections_pass.gpg"
+    echo
+
+    # Dependency status
+    print_color "$WHITE$BOLD" "🔧 DEPENDENCY STATUS"
+    print_divider
+    if command_exists gpg; then
+        print_info "GPG (password encryption): ${GREEN}Installed ${ICON_LOCK}"
+    else
+        print_info "GPG (password encryption): ${YELLOW}Not installed ${ICON_WARNING}"
+    fi
+
+    if command_exists sshpass; then
+        print_info "sshpass (auto-login): ${GREEN}Installed ${ICON_SUCCESS}"
+    else
+        print_info "sshpass (auto-login): ${YELLOW}Not installed ${ICON_WARNING}"
+    fi
     echo
 
     # Next steps

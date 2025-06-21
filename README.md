@@ -1,6 +1,6 @@
 # Nedara Connect
 
-**Nedara Connect** is a lightweight shell tool for managing and connecting to SSH hosts using simple aliases.
+**Nedara Connect** is a lightweight shell tool for managing and connecting to SSH hosts using simple aliases with secure password storage.
 
 Easily store and reuse your SSH connection configurations without needing to remember long commands or edit your `~/.ssh/config`.
 
@@ -9,11 +9,30 @@ Easily store and reuse your SSH connection configurations without needing to rem
 ## ✨ Features
 
 - Add new SSH connections with a friendly prompt
-- List all saved connections
+- List all saved connections with security status
 - Quickly connect using simple names
-- Stores connection data securely in `~/.ssh/connections.conf`
+- Optional secure password storage using GPG encryption
+- Delete existing connections
+- Stores connection data securely:
+  - Configurations in `~/.ssh/connections.conf`
+  - Encrypted passwords in `~/.ssh/connections_pass.gpg`
 
 ## 📦 Installation
+
+### Prerequisites
+
+Ensure you have these installed:
+- `gpg` (GNU Privacy Guard) - for password encryption
+- `sshpass` - for automatic password authentication (only needed if using password storage)
+
+Install on Ubuntu/Debian:
+```bash
+sudo apt-get install gpg sshpass
+```
+Install on macOS (using Homebrew):
+```bash
+brew install gpg sshpass
+```
 
 ### 1. Clone the Repository
 
@@ -70,6 +89,12 @@ nedara-connect list
 nedara-connect <connection-name>
 ```
 
+### Delete a connection
+
+```bash
+nedara-connect delete <connection-name>
+```
+
 ### Help
 
 ```bash
@@ -90,6 +115,10 @@ Each entry has the format:
 <name>:<username>:<host>:<port>
 ```
 
+All sensitive data is stored securely:
+- Configurations in ~/.ssh/connections.conf (plain text)
+- Passwords in ~/.ssh/connections_pass.gpg (encrypted with GPG)
+
 ---
 
 ## 📁 Example
@@ -100,6 +129,8 @@ nedara-connect add
 # Enter username
 # Enter hostname or IP
 # Enter port (default is 22)
+# Save password? [y/N]
+# Enter password
 ```
 
 Then later:

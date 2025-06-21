@@ -1,16 +1,17 @@
 #!/bin/bash
 # :project:    Nedara Connect
-# :version:    0.2.0-alpha
+# :version:    0.3.0-alpha
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
 # :repository: https://github.com/Nedara-Project/nedara-connect
 # :overview:   Nedara-connect is a lightweight shell tool for managing and connecting to SSH hosts
 # :published:  2025-04-08
-# :modified:   2025-06-09
+# :modified:   2025-06-21
 
 # Configuration
 CONFIG_FILE="$HOME/.ssh/connections.conf"
+PASS_FILE="$HOME/.ssh/connections_pass.gpg"
 CONFIG_DIR="$HOME/.ssh"
 
 # Colors and formatting
@@ -37,6 +38,8 @@ ICON_INFO="ℹ️ "
 ICON_ARROW="➤"
 ICON_BULLET="•"
 ICON_PLUS="+"
+ICON_TRASH="🗑️"
+ICON_LOCK="🔒"
 
 # Function to print colored output
 print_color() {
@@ -49,7 +52,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.2.0${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.3.0${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
@@ -88,6 +91,12 @@ if [ ! -f "$CONFIG_FILE" ]; then
     touch "$CONFIG_FILE"
 fi
 
+# Create password file if it doesn't exist
+if [ ! -f "$PASS_FILE" ]; then
+    touch "$PASS_FILE"
+    chmod 600 "$PASS_FILE"
+fi
+
 # Function to validate input
 validate_input() {
     local input=$1
@@ -111,6 +120,45 @@ validate_input() {
 connection_exists() {
     local name=$1
     grep -q "^$name:" "$CONFIG_FILE" 2>/dev/null
+}
+
+# Function to decrypt passwords file
+decrypt_passwords() {
+    if [ -s "$PASS_FILE" ]; then
+        gpg --quiet --decrypt "$PASS_FILE" 2>/dev/null
+    else
+        echo ""
+    fi
+}
+
+# Function to encrypt passwords file
+encrypt_passwords() {
+    local content=$1
+    echo "$content" | gpg --symmetric --yes --quiet --output "$PASS_FILE" 2>/dev/null
+    chmod 600 "$PASS_FILE"
+}
+
+# Function to get password for a connection
+get_password() {
+    local name=$1
+    decrypt_passwords | grep "^$name:" | cut -d: -f2-
+}
+
+# Function to save password for a connection
+save_password() {
+    local name=$1
+    local password=$2
+    local current_passwords=$(decrypt_passwords)
+
+    # Remove existing password if any
+    current_passwords=$(echo "$current_passwords" | grep -v "^$name:")
+
+    # Add new password
+    if [ -n "$password" ]; then
+        current_passwords+=$'\n'"$name:$password"
+    fi
+
+    encrypt_passwords "$current_passwords"
 }
 
 add_connection() {
@@ -157,6 +205,22 @@ add_connection() {
         port=22
     fi
 
+    # Ask if user wants to save password
+    print_prompt "Do you want to save a password for this connection? [y/N] "
+    read -r save_pass
+    if [[ "$save_pass" =~ ^[Yy]$ ]]; then
+        while true; do
+            print_prompt "Password (will be stored encrypted): "
+            read -rs password
+            echo
+            if validate_input "$password" "password"; then
+                save_password "$name" "$password"
+                print_success "Password saved securely!"
+                break
+            fi
+        done
+    fi
+
     echo "$name:$username:$host:$port" >> "$CONFIG_FILE"
 
     echo
@@ -186,11 +250,48 @@ list_connections() {
         echo -e "     ${GRAY}${ICON_USER} User:${RESET} ${GREEN}${username}${RESET}"
         echo -e "     ${GRAY}${ICON_SERVER} Host:${RESET} ${BLUE}${host}${RESET}"
         echo -e "     ${GRAY}${ICON_PORT} Port:${RESET} ${YELLOW}${port}${RESET}"
+        if get_password "$name" >/dev/null; then
+            echo -e "     ${GRAY}${ICON_LOCK} Password:${RESET} ${GREEN}(stored securely)${RESET}"
+        fi
         echo
     done < "$CONFIG_FILE"
 
     print_divider
     print_info "Total: ${WHITE}${count}${BLUE} connection(s) configured"
+    echo
+}
+
+delete_connection() {
+    local name=$1
+
+    if [ -z "$name" ]; then
+        print_header
+        print_error "Please specify a connection name to delete"
+        echo
+        list_connections
+        exit 1
+    fi
+
+    if ! connection_exists "$name"; then
+        print_header
+        print_error "Connection '$name' not found"
+        echo
+        list_connections
+        exit 1
+    fi
+
+    print_header
+    print_color "$RED$BOLD" "${ICON_TRASH} Deleting connection '$name'"
+    print_divider
+
+    # Remove from config file
+    sed -i "/^$name:/d" "$CONFIG_FILE"
+
+    # Remove password if exists
+    local current_passwords=$(decrypt_passwords | grep -v "^$name:")
+    encrypt_passwords "$current_passwords"
+
+    print_success "Connection '$name' deleted successfully!"
     echo
 }
 
@@ -219,19 +320,40 @@ connect() {
     # Extract the connection details
     IFS=: read -r name username host port <<< "$connection_details"
 
+    # Check if password is stored
+    local password=$(get_password "$name")
+    local ssh_command
+
+    if [ -n "$password" ]; then
+        # Use sshpass if password is available
+        if ! command -v sshpass &> /dev/null; then
+            print_error "sshpass is required for password authentication but not installed"
+            print_info "Please install sshpass or connect without saved password"
+            exit 1
+        fi
+        ssh_command="sshpass -p '$password' ssh -p $port $username@$host"
+    else
+        ssh_command="ssh -p $port $username@$host"
+    fi
+
     print_header
     print_color "$GREEN$BOLD" "${ICON_CONNECT} Connecting to $name"
     print_divider
     print_info "User: ${GREEN}${username}"
     print_info "Host: ${BLUE}${host}"
     print_info "Port: ${YELLOW}${port}"
+    if [ -n "$password" ]; then
+        print_info "Auth: ${GREEN}Using saved password${RESET}"
+    else
+        print_info "Auth: ${YELLOW}Using SSH key or manual password entry${RESET}"
+    fi
     echo
     print_color "$CYAN" "Establishing SSH connection..."
     print_divider
     echo
 
-    # Use ssh with -tt to force pseudo-terminal allocation
-    ssh -tt -p "$port" "$username@$host"
+    # Execute the SSH command
+    eval "$ssh_command"
 
     # Show disconnection message
     echo
@@ -249,6 +371,7 @@ show_help() {
     echo
     echo -e "  ${GREEN}${BOLD}nedara-connect add${RESET}           ${GRAY}# Add a new connection${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect list${RESET}          ${GRAY}# List all connections${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect delete <name>${RESET} ${GRAY}# Delete a connection${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect <name>${RESET}        ${GRAY}# Connect to a saved connection${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect help${RESET}          ${GRAY}# Show this help message${RESET}"
     echo
@@ -256,10 +379,11 @@ show_help() {
     echo
     echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect add${RESET}      ${DIM}# Add a new connection${RESET}"
     echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect prod${RESET}     ${DIM}# Connect to 'prod' server${RESET}"
-    echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect staging${RESET}  ${DIM}# Connect to 'staging' server${RESET}"
+    echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect delete staging${RESET}  ${DIM}# Delete 'staging' connection${RESET}"
     echo
     print_divider
     print_info "Configuration stored in: ${CYAN}${CONFIG_FILE}"
+    print_info "Passwords stored in: ${CYAN}${PASS_FILE} (encrypted)"
     echo
 }
 
@@ -270,6 +394,9 @@ case "$1" in
         ;;
     "list")
         list_connections
+        ;;
+    "delete")
+        delete_connection "$2"
         ;;
     "help"|"-h"|"--help")
         show_help
