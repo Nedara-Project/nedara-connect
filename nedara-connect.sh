@@ -1,6 +1,6 @@
 #!/bin/bash
 # :project:    Nedara Connect
-# :version:    0.3.1-alpha
+# :version:    0.3.2-alpha
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
@@ -129,7 +129,7 @@ connection_exists() {
 # Function to decrypt passwords file
 decrypt_passwords() {
     if [ -s "$PASS_FILE" ]; then
-        gpg --batch --pinentry-mode loopback --quiet --decrypt "$PASS_FILE" 2>/dev/null
+        gpg --batch --yes --quiet --pinentry-mode loopback --passphrase 'nedaraconnect' --decrypt "$PASS_FILE" 2>/dev/null
     else
         echo ""
     fi
@@ -138,14 +138,14 @@ decrypt_passwords() {
 # Function to encrypt passwords file
 encrypt_passwords() {
     local content=$1
-    echo "$content" | gpg --batch --pinentry-mode loopback --yes --quiet --output "$PASS_FILE" --symmetric 2>/dev/null
+    echo "$content" | gpg --batch --yes --quiet --pinentry-mode loopback --passphrase 'nedaraconnect' --symmetric --output "$PASS_FILE"
     chmod 600 "$PASS_FILE"
 }
 
 # Function to get password for a connection
 get_password() {
     local name=$1
-    decrypt_passwords | grep "^$name:" | cut -d: -f2-
+    decrypt_passwords | grep "^$name:" | cut -d: -f2- | tr -d '\n'
 }
 
 # Function to save password for a connection
@@ -335,7 +335,7 @@ connect() {
             print_info "Please install sshpass or connect without saved password"
             exit 1
         fi
-        ssh_command="sshpass -p '$password' ssh -p $port $username@$host"
+        sshpass -p "$password" ssh -tt -o StrictHostKeyChecking=no -p "$port" "$username@$host"
     else
         ssh_command="ssh -p $port $username@$host"
     fi
