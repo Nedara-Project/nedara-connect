@@ -56,7 +56,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.3.1${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.3.2${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
