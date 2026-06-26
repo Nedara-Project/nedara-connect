@@ -143,7 +143,38 @@ nedara-connect staging
 
 ---
 
-## ⬆️ Upgrading
+## ⬆️ Updating
+
+### Built-in update command
+
+The easiest way to update is to use the built-in command:
+
+```bash
+nedara-connect update
+```
+
+It fetches the latest version number from GitHub, compares it with your local version, and downloads the update if one is available.
+
+### Manual update — one-line installer
+
+If you installed via the one-liner, re-run it:
+
+```bash
+curl -s https://raw.githubusercontent.com/Nedara-Project/nedara-connect/main/install.sh | bash -
+```
+
+### Manual update — git clone
+
+If you cloned the repository:
+
+```bash
+cd nedara-connect
+git pull
+```
+
+---
+
+### Migrating from older versions
 
 If you are upgrading from a version prior to **0.4.0**, your saved passwords will be migrated automatically on the first run. No action needed — the tool detects the old format and re-encrypts your passwords using the new per-machine key.
 

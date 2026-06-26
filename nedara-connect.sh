@@ -14,6 +14,7 @@ CONFIG_FILE="$HOME/.ssh/connections.conf"
 PASS_FILE="$HOME/.ssh/connections_pass.gpg"
 KEY_FILE="$HOME/.ssh/connections_key"
 CONFIG_DIR="$HOME/.ssh"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/Nedara-Project/nedara-connect/main/nedara-connect.sh"
 
 # Configure GPG properly
 export GPG_TTY=$(tty)
@@ -417,6 +418,7 @@ show_help() {
     echo -e "  ${GREEN}${BOLD}nedara-connect list${RESET}          ${GRAY}# List all connections${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect delete <name>${RESET} ${GRAY}# Delete a connection${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect <name>${RESET}        ${GRAY}# Connect to a saved connection${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect update${RESET}        ${GRAY}# Check for updates and upgrade${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect help${RESET}          ${GRAY}# Show this help message${RESET}"
     echo
     print_color "$CYAN$BOLD" "EXAMPLES:"
@@ -429,6 +431,88 @@ show_help() {
     print_info "Configuration stored in: ${CYAN}${CONFIG_FILE}"
     print_info "Passwords stored in:     ${CYAN}${PASS_FILE} (encrypted)"
     print_info "Encryption key in:       ${CYAN}${KEY_FILE} (keep this safe!)"
+    echo
+}
+
+# Compare two semver strings. Returns 0 if $1 < $2 (i.e. update available).
+_version_lt() {
+    local IFS=.
+    local -a a=($1) b=($2)
+    for i in 0 1 2; do
+        local x=${a[$i]:-0} y=${b[$i]:-0}
+        [ "$x" -lt "$y" ] && return 0
+        [ "$x" -gt "$y" ] && return 1
+    done
+    return 1
+}
+
+update_self() {
+    print_header
+    print_color "$PURPLE$BOLD" "🔄 Checking for updates..."
+    print_divider
+    echo
+
+    if ! command -v curl &>/dev/null; then
+        print_error "curl is required for updates but not installed."
+        exit 1
+    fi
+
+    # Local version from this script's header
+    local local_version
+    local_version=$(grep -m1 '^# :version:' "$0" | sed 's/.*:version:[[:space:]]*//')
+    print_info "Local version:  ${WHITE}${local_version}"
+
+    # Remote version: fetch only the first 15 lines of the script
+    local remote_version
+    remote_version=$(curl -sf --max-time 10 "$GITHUB_RAW_URL" | head -15 \
+        | grep -m1 '^# :version:' | sed 's/.*:version:[[:space:]]*//')
+
+    if [ -z "$remote_version" ]; then
+        print_error "Could not reach GitHub. Check your internet connection."
+        exit 1
+    fi
+
+    print_info "Latest version: ${WHITE}${remote_version}"
+    echo
+
+    if ! _version_lt "$local_version" "$remote_version"; then
+        print_success "Already up to date!"
+        echo
+        return
+    fi
+
+    print_color "$YELLOW$BOLD" "  New version available: ${remote_version}"
+    echo
+    print_prompt "Update now? [y/N] "
+    read -r answer
+    echo
+
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        print_info "Update cancelled."
+        echo
+        return
+    fi
+
+    # Resolve the actual path of the installed script
+    local script_path
+    script_path=$(command -v nedara-connect 2>/dev/null)
+    if [ -z "$script_path" ]; then
+        script_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
+    fi
+
+    print_color "$CYAN" "Downloading version ${remote_version}..."
+    local tmpfile
+    tmpfile=$(mktemp)
+    if curl -sf --max-time 30 "$GITHUB_RAW_URL" -o "$tmpfile"; then
+        chmod +x "$tmpfile"
+        mv "$tmpfile" "$script_path"
+        print_success "Updated to ${remote_version}!"
+        print_info "Re-run any nedara-connect command to use the new version."
+    else
+        rm -f "$tmpfile"
+        print_error "Download failed. Please try again."
+        exit 1
+    fi
     echo
 }
 
@@ -709,6 +793,9 @@ case "$1" in
         ;;
     "tui")
         launch_tui
+        ;;
+    "update")
+        update_self
         ;;
     "help"|"-h"|"--help")
         show_help
