@@ -432,44 +432,123 @@ show_help() {
     echo
 }
 
-# ─── TUI ────────────────────────────────────────────────────────────────────
+# ─── Pure bash TUI (no external dependencies) ───────────────────────────────
 
-TUI_TOOL=""
-
-# Routes whiptail/dialog I/O through /dev/tty so the UI always renders on
-# the real terminal regardless of how the script is invoked (alias, subshell,
-# zsh, etc.). Selections are captured via a temp file and echoed to stdout so
-# callers can use choice=$(_d ...) without any fd-swap tricks.
-_d() {
-    local tmpfile exit_code
-    tmpfile=$(mktemp)
-    if [ "$TUI_TOOL" = "dialog" ]; then
-        dialog --mouse "$@" 2>"$tmpfile" </dev/tty >/dev/tty
-    else
-        whiptail "$@" 2>"$tmpfile" </dev/tty >/dev/tty
+# Read one keypress from the terminal, including arrow key escape sequences.
+_tui_read_key() {
+    local key seq
+    IFS= read -rsn1 key </dev/tty
+    if [[ "$key" == $'\x1b' ]]; then
+        IFS= read -rsn2 -t 0.15 seq </dev/tty 2>/dev/null
+        key="${key}${seq}"
     fi
-    exit_code=$?
-    cat "$tmpfile"
-    rm -f "$tmpfile"
-    return $exit_code
+    printf '%s' "$key"
+}
+
+# Draw the standard header, optionally with a subtitle line.
+_tui_header() {
+    local sub="${1:-}"
+    clear
+    echo
+    print_color "$CYAN$BOLD" "  ╭─────────────────────────────────────────────╮"
+    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.4.0${CYAN}             │"
+    if [ -n "$sub" ]; then
+        printf "${CYAN}${BOLD}  │  ${WHITE}%-43s${CYAN}│${RESET}\n" "$sub"
+    fi
+    print_color "$CYAN$BOLD" "  ╰─────────────────────────────────────────────╯"
+    echo
+}
+
+# Interactive arrow-key menu.
+# Usage: _tui_menu "Subtitle" val1 "Label 1" val2 "Label 2" ...
+# Prints selected value to stdout; returns 1 on quit/Esc.
+_tui_menu() {
+    local sub="$1"; shift
+    local -a values labels
+    while [[ $# -ge 2 ]]; do
+        values+=("$1"); labels+=("$2"); shift 2
+    done
+
+    local selected=0 n=${#values[@]}
+
+    while true; do
+        _tui_header "$sub"
+        for i in "${!values[@]}"; do
+            if [ "$i" -eq "$selected" ]; then
+                echo -e "  ${GREEN}${BOLD}▶  ${labels[$i]}${RESET}"
+            else
+                echo -e "  ${GRAY}   ${labels[$i]}${RESET}"
+            fi
+        done
+        echo
+        print_color "$DIM" "  ↑ ↓  navigate    Enter  select    q  quit"
+
+        local key
+        key=$(_tui_read_key)
+        case "$key" in
+            $'\x1b[A'|$'\x1bOA') [ "$selected" -gt 0 ]        && selected=$((selected - 1)) ;;
+            $'\x1b[B'|$'\x1bOB') [ "$selected" -lt $((n-1)) ] && selected=$((selected + 1)) ;;
+            ''|$'\n'|$'\r')  printf '%s' "${values[$selected]}"; return 0 ;;
+            'q'|'Q'|$'\x1b'|$'\x03') return 1 ;;
+        esac
+    done
+}
+
+# Single-line text prompt. Prints entered value to stdout.
+# Usage: _tui_input "Prompt text" ["default"]
+_tui_input() {
+    local prompt="$1" default="${2:-}" result
+    if [ -n "$default" ]; then
+        printf "  ${YELLOW}▶ ${WHITE}%s${RESET} ${DIM}[%s]${RESET}: " "$prompt" "$default"
+    else
+        printf "  ${YELLOW}▶ ${WHITE}%s${RESET}: " "$prompt"
+    fi
+    IFS= read -r result </dev/tty
+    [ -z "$result" ] && result="$default"
+    printf '%s' "$result"
+}
+
+# Silent password prompt. Prints entered value to stdout.
+_tui_password() {
+    local prompt="$1" result
+    printf "  ${YELLOW}▶ ${WHITE}%s${RESET}: " "$prompt"
+    IFS= read -rs result </dev/tty
+    echo
+    printf '%s' "$result"
+}
+
+# Yes/No prompt. Returns 0 for yes, 1 for no.
+_tui_yesno() {
+    local prompt="$1" answer
+    printf "  ${YELLOW}▶ ${WHITE}%s${RESET} ${DIM}[y/N]${RESET}: " "$prompt"
+    IFS= read -rn1 answer </dev/tty
+    echo
+    [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+# Full-screen message box. Waits for any key.
+_tui_message() {
+    local title="$1" msg="$2"
+    _tui_header "$title"
+    echo -e "  $msg"
+    echo
+    print_color "$DIM" "  Press any key to continue..."
+    IFS= read -rsn1 </dev/tty
 }
 
 _tui_connect() {
     if [ ! -s "$CONFIG_FILE" ]; then
-        _d --title " Nedara Connect " --msgbox \
-            "\nNo connections saved yet.\n\nGo to 'Add connection' to create one." 9 52
+        _tui_message "Connect" "No connections saved yet.\n\n  Use 'Add connection' to create one."
         return
     fi
 
-    local items=()
+    local -a args=()
     while IFS=: read -r name username host port; do
-        items+=("$name" "$username@$host:$port")
+        args+=("$name" "$name  ${DIM}($username@$host:$port)${RESET}")
     done < "$CONFIG_FILE"
 
     local choice
-    choice=$(_d --title " Connect " \
-        --menu "\nSelect a connection:" 16 56 8 \
-        "${items[@]}") || return
+    choice=$(_tui_menu "Connect to a host" "${args[@]}") || return
 
     clear
     connect "$choice"
@@ -478,131 +557,129 @@ _tui_connect() {
 _tui_add() {
     local name username host port password
 
+    _tui_header "Add Connection"
+
     while true; do
-        name=$(_d --title " Add Connection (1/4) " --inputbox \
-            "\nConnection name  (letters, numbers, - and _):" 9 56 "") || return
+        name=$(_tui_input "Connection name (letters, numbers, - and _)")
         if [ -z "$name" ]; then
-            _d --title " Error " --msgbox "\nName cannot be empty." 7 40
+            print_error "Name cannot be empty."; continue
         elif [[ "$name" =~ [^a-zA-Z0-9_-] ]]; then
-            _d --title " Error " --msgbox \
-                "\nAllowed characters: letters, numbers, - and _" 8 50
+            print_error "Allowed characters: letters, numbers, - and _"; continue
         elif connection_exists "$name"; then
-            _d --title " Error " --msgbox \
-                "\nA connection named '$name' already exists." 7 50
-        else
-            break
+            print_error "A connection named '$name' already exists."; continue
         fi
+        break
     done
 
     while true; do
-        username=$(_d --title " Add Connection (2/4) " --inputbox \
-            "\nUsername:" 9 56 "") || return
+        username=$(_tui_input "Username")
         [ -n "$username" ] && break
-        _d --title " Error " --msgbox "\nUsername cannot be empty." 7 40
+        print_error "Username cannot be empty."
     done
 
     while true; do
-        host=$(_d --title " Add Connection (3/4) " --inputbox \
-            "\nHostname or IP address:" 9 56 "") || return
+        host=$(_tui_input "Hostname or IP address")
         [ -n "$host" ] && break
-        _d --title " Error " --msgbox "\nHostname cannot be empty." 7 40
+        print_error "Hostname cannot be empty."
     done
 
-    port=$(_d --title " Add Connection (4/4) " --inputbox \
-        "\nPort:" 9 56 "22") || return
+    port=$(_tui_input "Port" "22")
     port=${port:-22}
     if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-        _d --title " Warning " --msgbox "\nInvalid port — using default 22." 7 44
+        print_error "Invalid port — using default 22."
         port=22
     fi
 
-    if _d --title " Add Connection " --yesno \
-        "\nSave a password for this connection?" 7 50; then
+    if _tui_yesno "Save a password for this connection?"; then
         while true; do
-            password=$(_d --title " Add Connection " --passwordbox \
-                "\nPassword (stored encrypted):" 9 56) || break
+            password=$(_tui_password "Password (stored encrypted)")
             if [ -n "$password" ]; then
                 save_password "$name" "$password"
                 break
             fi
-            _d --title " Error " --msgbox "\nPassword cannot be empty." 7 40
+            print_error "Password cannot be empty."
         done
     fi
 
     echo "$name:$username:$host:$port" >> "$CONFIG_FILE"
-    _d --title " Success " --msgbox \
-        "\nConnection '$name' added!\n\n  User : $username\n  Host : $host\n  Port : $port" \
-        11 50
+    echo
+    print_success "Connection '$name' added!"
+    print_info "  $username@$host:$port"
+    echo
+    print_color "$DIM" "  Press any key to continue..."
+    IFS= read -rsn1 </dev/tty
 }
 
 _tui_list() {
+    _tui_header "Saved Connections"
+
     if [ ! -s "$CONFIG_FILE" ]; then
-        _d --title " Connections " --msgbox \
-            "\nNo connections saved yet.\n\nGo to 'Add connection' to create one." 9 52
+        echo -e "  ${YELLOW}No connections saved yet.${RESET}"
+        echo -e "  Use 'Add connection' to create one."
+        echo
+        print_color "$DIM" "  Press any key to continue..."
+        IFS= read -rsn1 </dev/tty
         return
     fi
 
-    local msg="" count=0
+    local count=0
     while IFS=: read -r name username host port; do
         count=$((count + 1))
         local stored_pass
         stored_pass=$(get_password "$name")
-        local lock=""
-        [ -n "$stored_pass" ] && lock="  [password saved]"
-        msg+="$count.  $name\n    $username@$host:$port$lock\n\n"
+        echo -e "  ${CYAN}${BOLD}${count}.${RESET} ${WHITE}${BOLD}${name}${RESET}"
+        echo -e "     ${GRAY}User:${RESET} ${GREEN}${username}${RESET}  ${GRAY}Host:${RESET} ${BLUE}${host}${RESET}  ${GRAY}Port:${RESET} ${YELLOW}${port}${RESET}"
+        [ -n "$stored_pass" ] && echo -e "     ${GRAY}${ICON_LOCK} Password stored securely${RESET}"
+        echo
     done < "$CONFIG_FILE"
 
-    _d --title " Connections ($count) " --msgbox "$msg" 20 60
+    print_divider
+    print_info "Total: ${WHITE}${count}${BLUE} connection(s)"
+    echo
+    print_color "$DIM" "  Press any key to continue..."
+    IFS= read -rsn1 </dev/tty
 }
 
 _tui_delete() {
     if [ ! -s "$CONFIG_FILE" ]; then
-        _d --title " Delete " --msgbox "\nNo connections found." 7 40
+        _tui_message "Delete" "No connections found."
         return
     fi
 
-    local items=()
+    local -a args=()
     while IFS=: read -r name username host port; do
-        items+=("$name" "$username@$host:$port")
+        args+=("$name" "$name  ${DIM}($username@$host:$port)${RESET}")
     done < "$CONFIG_FILE"
 
     local choice
-    choice=$(_d --title " Delete Connection " \
-        --menu "\nSelect a connection to delete:" 16 56 8 \
-        "${items[@]}") || return
+    choice=$(_tui_menu "Delete a connection" "${args[@]}") || return
 
-    _d --title " Confirm " --yesno \
-        "\nDelete '$choice'?\n\nThis cannot be undone." 9 48 || return
+    _tui_header "Confirm Delete"
+    echo -e "  ${RED}${BOLD}Delete '${choice}'?${RESET}"
+    echo -e "  ${GRAY}This cannot be undone.${RESET}"
+    echo
+    _tui_yesno "Confirm deletion" || return
 
     sed -i "/^$choice:/d" "$CONFIG_FILE"
     local remaining
     remaining=$(decrypt_passwords | grep -v "^$choice:")
     encrypt_passwords "$remaining"
 
-    _d --title " Deleted " --msgbox "\nConnection '$choice' deleted." 7 44
+    echo
+    print_success "Connection '$choice' deleted."
+    echo
+    print_color "$DIM" "  Press any key to continue..."
+    IFS= read -rsn1 </dev/tty
 }
 
 launch_tui() {
-    if command -v dialog &>/dev/null; then
-        TUI_TOOL="dialog"
-    elif command -v whiptail &>/dev/null; then
-        TUI_TOOL="whiptail"
-    else
-        print_error "TUI requires 'dialog' or 'whiptail'"
-        print_info "Install with: sudo apt-get install dialog"
-        exit 1
-    fi
-
+    local choice
     while true; do
-        local choice
-        choice=$(_d \
-            --title " Nedara Connect v0.4.0 " \
-            --cancel-label "Exit" \
-            --menu "\n  SSH Connection Manager\n" 14 54 4 \
-            "connect" "  Connect to a saved host" \
-            "add"     "  Add a new connection" \
-            "list"    "  List all connections" \
-            "delete"  "  Delete a connection") || break
+        choice=$(_tui_menu "" \
+            "connect" "Connect to a saved host" \
+            "add"     "Add a new connection" \
+            "list"    "List all connections" \
+            "delete"  "Delete a connection") || break
 
         case "$choice" in
             connect) _tui_connect ;;
@@ -611,7 +688,6 @@ launch_tui() {
             delete)  _tui_delete ;;
         esac
     done
-
     clear
 }
 
