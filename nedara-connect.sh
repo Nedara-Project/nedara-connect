@@ -13,6 +13,7 @@
 CONFIG_FILE="$HOME/.ssh/connections.conf"
 PASS_FILE="$HOME/.ssh/connections_pass.gpg"
 KEY_FILE="$HOME/.ssh/connections_key"
+VERSION_CACHE="$HOME/.ssh/nedara_version_cache"
 CONFIG_DIR="$HOME/.ssh"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/Nedara-Project/nedara-connect/main/nedara-connect.sh"
 
@@ -62,6 +63,7 @@ print_header() {
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
+    _show_update_notice
 }
 
 # Function to print section divider
@@ -87,6 +89,49 @@ print_info() {
 # Function to print prompt
 print_prompt() {
     echo -n -e "${YELLOW}${ICON_ARROW} ${WHITE}$1${RESET}"
+}
+
+# Compare two semver strings. Returns 0 if $1 < $2 (update available).
+_version_lt() {
+    local IFS=.
+    local -a a=($1) b=($2)
+    for i in 0 1 2; do
+        local x=${a[$i]:-0} y=${b[$i]:-0}
+        [ "$x" -lt "$y" ] && return 0
+        [ "$x" -gt "$y" ] && return 1
+    done
+    return 1
+}
+
+# Print a one-line update notice if a newer version is in the cache (no network).
+_show_update_notice() {
+    [ -f "$VERSION_CACHE" ] || return
+    local local_version cached
+    local_version=$(grep -m1 '^# :version:' "$0" | sed 's/.*:version:[[:space:]]*//')
+    cached=$(cat "$VERSION_CACHE" 2>/dev/null)
+    if [ -n "$cached" ] && _version_lt "$local_version" "$cached"; then
+        print_color "$YELLOW" "  💡 v${cached} available — run: ${CYAN}nedara-connect update${RESET}"
+        echo
+    fi
+}
+
+# Refresh the remote version cache silently in the background.
+# Uses a tmpfile + mv to avoid partial reads by _show_update_notice.
+_refresh_version_cache() {
+    (
+        local tmp
+        tmp=$(mktemp) || exit
+        if curl -sf --max-time 5 "$GITHUB_RAW_URL" 2>/dev/null \
+            | head -15 \
+            | grep -m1 '^# :version:' \
+            | sed 's/.*:version:[[:space:]]*//' \
+            > "$tmp" && [ -s "$tmp" ]; then
+            mv "$tmp" "$VERSION_CACHE"
+        else
+            rm -f "$tmp"
+        fi
+    ) &
+    disown $! 2>/dev/null
 }
 
 # Make sure config directory exists
@@ -133,6 +178,12 @@ migrate_legacy_passwords() {
 }
 
 migrate_legacy_passwords
+
+# Refresh the version cache in the background if it is missing or older than 24h.
+if [ ! -f "$VERSION_CACHE" ] || \
+   [ -n "$(find "$VERSION_CACHE" -mmin +1440 2>/dev/null)" ]; then
+    _refresh_version_cache
+fi
 
 # Function to validate input
 validate_input() {
@@ -434,18 +485,6 @@ show_help() {
     echo
 }
 
-# Compare two semver strings. Returns 0 if $1 < $2 (i.e. update available).
-_version_lt() {
-    local IFS=.
-    local -a a=($1) b=($2)
-    for i in 0 1 2; do
-        local x=${a[$i]:-0} y=${b[$i]:-0}
-        [ "$x" -lt "$y" ] && return 0
-        [ "$x" -gt "$y" ] && return 1
-    done
-    return 1
-}
-
 update_self() {
     print_header
     print_color "$PURPLE$BOLD" "🔄 Checking for updates..."
@@ -547,6 +586,7 @@ _tui_header() {
     fi
     print_color "$CYAN$BOLD" "  ╰─────────────────────────────────────────────╯"
     echo
+    _show_update_notice
 }
 
 # Interactive arrow-key menu.
