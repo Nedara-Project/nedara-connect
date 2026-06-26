@@ -13,6 +13,7 @@ Easily store and reuse your SSH connection configurations without needing to rem
 - Quickly connect using simple names
 - Optional secure password storage using GPG encryption
 - Delete existing connections
+- Interactive TUI mode (arrow keys + mouse) powered by `dialog` or `whiptail`
 - Stores connection data securely:
   - Configurations in `~/.ssh/connections.conf`
   - Encrypted passwords in `~/.ssh/connections_pass.gpg`
@@ -72,34 +73,34 @@ curl -s https://raw.githubusercontent.com/Nedara-Project/nedara-connect/main/ins
 
 ## 🚀 Usage
 
-### Add a new connection
+### Interactive TUI (default)
+
+Running `nedara-connect` with no arguments launches the interactive terminal UI:
 
 ```bash
-nedara-connect add
+nedara-connect
+# or explicitly:
+nedara-connect tui
 ```
 
-### List saved connections
+Navigate with arrow keys, confirm with Enter. If `dialog` is installed, mouse clicks are also supported.
 
+**TUI dependency** — install one of:
 ```bash
-nedara-connect list
+sudo apt-get install dialog    # preferred (mouse support)
+sudo apt-get install whiptail  # fallback (usually pre-installed)
 ```
 
-### Connect to a saved host
+---
+
+### CLI commands
 
 ```bash
-nedara-connect <connection-name>
-```
-
-### Delete a connection
-
-```bash
-nedara-connect delete <connection-name>
-```
-
-### Help
-
-```bash
-nedara-connect help
+nedara-connect add                  # Add a new connection
+nedara-connect list                 # List all connections
+nedara-connect <connection-name>    # Connect directly by name
+nedara-connect delete <name>        # Delete a connection
+nedara-connect help                 # Show help
 ```
 
 ## 🔐 Connection File

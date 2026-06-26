@@ -406,7 +406,12 @@ show_help() {
     print_color "$WHITE$BOLD" "📖 Usage Guide"
     print_divider
     echo
-    print_color "$CYAN$BOLD" "AVAILABLE COMMANDS:"
+    print_color "$CYAN$BOLD" "INTERACTIVE MODE (TUI):"
+    echo
+    echo -e "  ${GREEN}${BOLD}nedara-connect${RESET}               ${GRAY}# Launch interactive TUI (default)${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect tui${RESET}           ${GRAY}# Launch interactive TUI (explicit)${RESET}"
+    echo
+    print_color "$CYAN$BOLD" "CLI COMMANDS:"
     echo
     echo -e "  ${GREEN}${BOLD}nedara-connect add${RESET}           ${GRAY}# Add a new connection${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect list${RESET}          ${GRAY}# List all connections${RESET}"
@@ -427,7 +432,184 @@ show_help() {
     echo
 }
 
-# Main script logic
+# ─── TUI ────────────────────────────────────────────────────────────────────
+
+TUI_TOOL=""
+
+# Wrapper: uses dialog (with mouse) if available, otherwise whiptail
+_d() {
+    if [ "$TUI_TOOL" = "dialog" ]; then
+        dialog --mouse "$@"
+    else
+        whiptail "$@"
+    fi
+}
+
+_tui_connect() {
+    if [ ! -s "$CONFIG_FILE" ]; then
+        _d --title " Nedara Connect " --msgbox \
+            "\nNo connections saved yet.\n\nGo to 'Add connection' to create one." 9 52
+        return
+    fi
+
+    local items=()
+    while IFS=: read -r name username host port; do
+        items+=("$name" "$username@$host:$port")
+    done < "$CONFIG_FILE"
+
+    local choice
+    choice=$(_d --title " Connect " \
+        --menu "\nSelect a connection:" 16 56 8 \
+        "${items[@]}" 3>&1 1>&2 2>&3) || return
+
+    clear
+    connect "$choice"
+}
+
+_tui_add() {
+    local name username host port password
+
+    while true; do
+        name=$(_d --title " Add Connection (1/4) " --inputbox \
+            "\nConnection name  (letters, numbers, - and _):" 9 56 "" \
+            3>&1 1>&2 2>&3) || return
+        if [ -z "$name" ]; then
+            _d --title " Error " --msgbox "\nName cannot be empty." 7 40
+        elif [[ "$name" =~ [^a-zA-Z0-9_-] ]]; then
+            _d --title " Error " --msgbox \
+                "\nAllowed characters: letters, numbers, - and _" 8 50
+        elif connection_exists "$name"; then
+            _d --title " Error " --msgbox \
+                "\nA connection named '$name' already exists." 7 50
+        else
+            break
+        fi
+    done
+
+    while true; do
+        username=$(_d --title " Add Connection (2/4) " --inputbox \
+            "\nUsername:" 9 56 "" 3>&1 1>&2 2>&3) || return
+        [ -n "$username" ] && break
+        _d --title " Error " --msgbox "\nUsername cannot be empty." 7 40
+    done
+
+    while true; do
+        host=$(_d --title " Add Connection (3/4) " --inputbox \
+            "\nHostname or IP address:" 9 56 "" 3>&1 1>&2 2>&3) || return
+        [ -n "$host" ] && break
+        _d --title " Error " --msgbox "\nHostname cannot be empty." 7 40
+    done
+
+    port=$(_d --title " Add Connection (4/4) " --inputbox \
+        "\nPort:" 9 56 "22" 3>&1 1>&2 2>&3) || return
+    port=${port:-22}
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        _d --title " Warning " --msgbox "\nInvalid port — using default 22." 7 44
+        port=22
+    fi
+
+    if _d --title " Add Connection " --yesno \
+        "\nSave a password for this connection?" 7 50; then
+        while true; do
+            password=$(_d --title " Add Connection " --passwordbox \
+                "\nPassword (stored encrypted):" 9 56 3>&1 1>&2 2>&3) || break
+            if [ -n "$password" ]; then
+                save_password "$name" "$password"
+                break
+            fi
+            _d --title " Error " --msgbox "\nPassword cannot be empty." 7 40
+        done
+    fi
+
+    echo "$name:$username:$host:$port" >> "$CONFIG_FILE"
+    _d --title " Success " --msgbox \
+        "\nConnection '$name' added!\n\n  User : $username\n  Host : $host\n  Port : $port" \
+        11 50
+}
+
+_tui_list() {
+    if [ ! -s "$CONFIG_FILE" ]; then
+        _d --title " Connections " --msgbox \
+            "\nNo connections saved yet.\n\nGo to 'Add connection' to create one." 9 52
+        return
+    fi
+
+    local msg="" count=0
+    while IFS=: read -r name username host port; do
+        count=$((count + 1))
+        local stored_pass
+        stored_pass=$(get_password "$name")
+        local lock=""
+        [ -n "$stored_pass" ] && lock="  [password saved]"
+        msg+="$count.  $name\n    $username@$host:$port$lock\n\n"
+    done < "$CONFIG_FILE"
+
+    _d --title " Connections ($count) " --msgbox "$msg" 20 60
+}
+
+_tui_delete() {
+    if [ ! -s "$CONFIG_FILE" ]; then
+        _d --title " Delete " --msgbox "\nNo connections found." 7 40
+        return
+    fi
+
+    local items=()
+    while IFS=: read -r name username host port; do
+        items+=("$name" "$username@$host:$port")
+    done < "$CONFIG_FILE"
+
+    local choice
+    choice=$(_d --title " Delete Connection " \
+        --menu "\nSelect a connection to delete:" 16 56 8 \
+        "${items[@]}" 3>&1 1>&2 2>&3) || return
+
+    _d --title " Confirm " --yesno \
+        "\nDelete '$choice'?\n\nThis cannot be undone." 9 48 || return
+
+    sed -i "/^$choice:/d" "$CONFIG_FILE"
+    local remaining
+    remaining=$(decrypt_passwords | grep -v "^$choice:")
+    encrypt_passwords "$remaining"
+
+    _d --title " Deleted " --msgbox "\nConnection '$choice' deleted." 7 44
+}
+
+launch_tui() {
+    if command -v dialog &>/dev/null; then
+        TUI_TOOL="dialog"
+    elif command -v whiptail &>/dev/null; then
+        TUI_TOOL="whiptail"
+    else
+        print_error "TUI requires 'dialog' or 'whiptail'"
+        print_info "Install with: sudo apt-get install dialog"
+        exit 1
+    fi
+
+    while true; do
+        local choice
+        choice=$(_d \
+            --title " Nedara Connect v0.3.2 " \
+            --cancel-label "Exit" \
+            --menu "\n  SSH Connection Manager\n" 14 54 4 \
+            "connect" "  Connect to a saved host" \
+            "add"     "  Add a new connection" \
+            "list"    "  List all connections" \
+            "delete"  "  Delete a connection" \
+            3>&1 1>&2 2>&3) || break
+
+        case "$choice" in
+            connect) _tui_connect ;;
+            add)     _tui_add ;;
+            list)    _tui_list ;;
+            delete)  _tui_delete ;;
+        esac
+    done
+
+    clear
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
 case "$1" in
     "add")
         add_connection
@@ -438,15 +620,14 @@ case "$1" in
     "delete")
         delete_connection "$2"
         ;;
+    "tui")
+        launch_tui
+        ;;
     "help"|"-h"|"--help")
         show_help
         ;;
     "")
-        print_header
-        print_error "Please specify a command"
-        echo
-        show_help
-        exit 1
+        launch_tui
         ;;
     *)
         connect "$1"
