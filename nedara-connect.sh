@@ -433,6 +433,12 @@ show_help() {
 }
 
 # ─── Pure bash TUI (no external dependencies) ───────────────────────────────
+#
+# TUI functions NEVER use $() to return values — that would swallow their
+# display output into a pipe and show nothing on screen. Instead they write
+# to stdout (the terminal) directly, and store results in TUI_RESULT.
+
+TUI_RESULT=""
 
 # Read one keypress from the terminal, including arrow key escape sequences.
 _tui_read_key() {
@@ -461,7 +467,7 @@ _tui_header() {
 
 # Interactive arrow-key menu.
 # Usage: _tui_menu "Subtitle" val1 "Label 1" val2 "Label 2" ...
-# Prints selected value to stdout; returns 1 on quit/Esc.
+# Result is stored in TUI_RESULT. Returns 1 on quit/Esc.
 _tui_menu() {
     local sub="$1"; shift
     local -a values labels
@@ -469,7 +475,7 @@ _tui_menu() {
         values+=("$1"); labels+=("$2"); shift 2
     done
 
-    local selected=0 n=${#values[@]}
+    local selected=0 n=${#values[@]} key
 
     while true; do
         _tui_header "$sub"
@@ -483,54 +489,49 @@ _tui_menu() {
         echo
         print_color "$DIM" "  ↑ ↓  navigate    Enter  select    q  quit"
 
-        local key
         key=$(_tui_read_key)
         case "$key" in
             $'\x1b[A'|$'\x1bOA') [ "$selected" -gt 0 ]        && selected=$((selected - 1)) ;;
             $'\x1b[B'|$'\x1bOB') [ "$selected" -lt $((n-1)) ] && selected=$((selected + 1)) ;;
-            ''|$'\n'|$'\r')  printf '%s' "${values[$selected]}"; return 0 ;;
-            'q'|'Q'|$'\x1b'|$'\x03') return 1 ;;
+            ''|$'\n'|$'\r')  TUI_RESULT="${values[$selected]}"; return 0 ;;
+            'q'|'Q'|$'\x1b'|$'\x03') TUI_RESULT=""; return 1 ;;
         esac
     done
 }
 
-# Single-line text prompt. Prints entered value to stdout.
+# Single-line text prompt. Result stored in TUI_RESULT.
 # Usage: _tui_input "Prompt text" ["default"]
 _tui_input() {
-    local prompt="$1" default="${2:-}" result
+    local prompt="$1" default="${2:-}"
     if [ -n "$default" ]; then
         printf "  ${YELLOW}▶ ${WHITE}%s${RESET} ${DIM}[%s]${RESET}: " "$prompt" "$default"
     else
         printf "  ${YELLOW}▶ ${WHITE}%s${RESET}: " "$prompt"
     fi
-    IFS= read -r result </dev/tty
-    [ -z "$result" ] && result="$default"
-    printf '%s' "$result"
+    IFS= read -r TUI_RESULT </dev/tty
+    [ -z "$TUI_RESULT" ] && TUI_RESULT="$default"
 }
 
-# Silent password prompt. Prints entered value to stdout.
+# Silent password prompt. Result stored in TUI_RESULT.
 _tui_password() {
-    local prompt="$1" result
-    printf "  ${YELLOW}▶ ${WHITE}%s${RESET}: " "$prompt"
-    IFS= read -rs result </dev/tty
+    printf "  ${YELLOW}▶ ${WHITE}%s${RESET}: " "$1"
+    IFS= read -rs TUI_RESULT </dev/tty
     echo
-    printf '%s' "$result"
 }
 
-# Yes/No prompt. Returns 0 for yes, 1 for no.
+# Yes/No prompt. Returns 0 for yes, 1 for no (no TUI_RESULT).
 _tui_yesno() {
-    local prompt="$1" answer
-    printf "  ${YELLOW}▶ ${WHITE}%s${RESET} ${DIM}[y/N]${RESET}: " "$prompt"
+    local answer
+    printf "  ${YELLOW}▶ ${WHITE}%s${RESET} ${DIM}[y/N]${RESET}: " "$1"
     IFS= read -rn1 answer </dev/tty
     echo
     [[ "$answer" =~ ^[Yy]$ ]]
 }
 
-# Full-screen message box. Waits for any key.
+# Full-screen message. Waits for any key.
 _tui_message() {
-    local title="$1" msg="$2"
-    _tui_header "$title"
-    echo -e "  $msg"
+    _tui_header "$1"
+    echo -e "  $2"
     echo
     print_color "$DIM" "  Press any key to continue..."
     IFS= read -rsn1 </dev/tty
@@ -544,11 +545,11 @@ _tui_connect() {
 
     local -a args=()
     while IFS=: read -r name username host port; do
-        args+=("$name" "$name  ${DIM}($username@$host:$port)${RESET}")
+        args+=("$name" "$name  ($username@$host:$port)")
     done < "$CONFIG_FILE"
 
-    local choice
-    choice=$(_tui_menu "Connect to a host" "${args[@]}") || return
+    _tui_menu "Connect to a host" "${args[@]}" || return
+    local choice="$TUI_RESULT"
 
     clear
     connect "$choice"
@@ -560,7 +561,8 @@ _tui_add() {
     _tui_header "Add Connection"
 
     while true; do
-        name=$(_tui_input "Connection name (letters, numbers, - and _)")
+        _tui_input "Connection name (letters, numbers, - and _)"
+        name="$TUI_RESULT"
         if [ -z "$name" ]; then
             print_error "Name cannot be empty."; continue
         elif [[ "$name" =~ [^a-zA-Z0-9_-] ]]; then
@@ -572,19 +574,21 @@ _tui_add() {
     done
 
     while true; do
-        username=$(_tui_input "Username")
+        _tui_input "Username"
+        username="$TUI_RESULT"
         [ -n "$username" ] && break
         print_error "Username cannot be empty."
     done
 
     while true; do
-        host=$(_tui_input "Hostname or IP address")
+        _tui_input "Hostname or IP address"
+        host="$TUI_RESULT"
         [ -n "$host" ] && break
         print_error "Hostname cannot be empty."
     done
 
-    port=$(_tui_input "Port" "22")
-    port=${port:-22}
+    _tui_input "Port" "22"
+    port="${TUI_RESULT:-22}"
     if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
         print_error "Invalid port — using default 22."
         port=22
@@ -592,7 +596,8 @@ _tui_add() {
 
     if _tui_yesno "Save a password for this connection?"; then
         while true; do
-            password=$(_tui_password "Password (stored encrypted)")
+            _tui_password "Password (stored encrypted)"
+            password="$TUI_RESULT"
             if [ -n "$password" ]; then
                 save_password "$name" "$password"
                 break
@@ -648,11 +653,11 @@ _tui_delete() {
 
     local -a args=()
     while IFS=: read -r name username host port; do
-        args+=("$name" "$name  ${DIM}($username@$host:$port)${RESET}")
+        args+=("$name" "$name  ($username@$host:$port)")
     done < "$CONFIG_FILE"
 
-    local choice
-    choice=$(_tui_menu "Delete a connection" "${args[@]}") || return
+    _tui_menu "Delete a connection" "${args[@]}" || return
+    local choice="$TUI_RESULT"
 
     _tui_header "Confirm Delete"
     echo -e "  ${RED}${BOLD}Delete '${choice}'?${RESET}"
@@ -673,15 +678,14 @@ _tui_delete() {
 }
 
 launch_tui() {
-    local choice
     while true; do
-        choice=$(_tui_menu "" \
+        _tui_menu "" \
             "connect" "Connect to a saved host" \
             "add"     "Add a new connection" \
             "list"    "List all connections" \
-            "delete"  "Delete a connection") || break
+            "delete"  "Delete a connection" || break
 
-        case "$choice" in
+        case "$TUI_RESULT" in
             connect) _tui_connect ;;
             add)     _tui_add ;;
             list)    _tui_list ;;
