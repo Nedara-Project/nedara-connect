@@ -13,7 +13,7 @@ Easily store and reuse your SSH connection configurations without needing to rem
 - Quickly connect using simple names
 - Optional secure password storage using GPG encryption
 - Delete existing connections
-- Interactive TUI mode (arrow keys + mouse) powered by `dialog` or `whiptail`
+- Interactive TUI mode with arrow-key navigation (pure bash, no extra dependencies)
 - Stores connection data securely:
   - Configurations in `~/.ssh/connections.conf`
   - Encrypted passwords in `~/.ssh/connections_pass.gpg`
@@ -83,13 +83,7 @@ nedara-connect
 nedara-connect tui
 ```
 
-Navigate with arrow keys, confirm with Enter. If `dialog` is installed, mouse clicks are also supported.
-
-**TUI dependency** — install one of:
-```bash
-sudo apt-get install dialog    # preferred (mouse support)
-sudo apt-get install whiptail  # fallback (usually pre-installed)
-```
+Navigate with arrow keys, confirm with Enter, `q` to go back. No additional dependencies required — the TUI is implemented in pure bash.
 
 ---
 
