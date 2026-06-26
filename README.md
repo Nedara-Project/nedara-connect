@@ -151,7 +151,7 @@ nedara-connect staging
 
 ## ⬆️ Upgrading
 
-If you are upgrading from a version prior to **0.3.2**, your saved passwords will be migrated automatically on the first run. No action needed — the tool detects the old format and re-encrypts your passwords using the new per-machine key.
+If you are upgrading from a version prior to **0.4.0**, your saved passwords will be migrated automatically on the first run. No action needed — the tool detects the old format and re-encrypts your passwords using the new per-machine key.
 
 ---
 

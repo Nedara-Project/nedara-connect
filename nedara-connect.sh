@@ -1,6 +1,6 @@
 #!/bin/bash
 # :project:    Nedara Connect
-# :version:    0.3.2-alpha
+# :version:    0.4.0
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
@@ -57,7 +57,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.3.2${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.4.0${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
@@ -436,13 +436,22 @@ show_help() {
 
 TUI_TOOL=""
 
-# Wrapper: uses dialog (with mouse) if available, otherwise whiptail
+# Routes whiptail/dialog I/O through /dev/tty so the UI always renders on
+# the real terminal regardless of how the script is invoked (alias, subshell,
+# zsh, etc.). Selections are captured via a temp file and echoed to stdout so
+# callers can use choice=$(_d ...) without any fd-swap tricks.
 _d() {
+    local tmpfile exit_code
+    tmpfile=$(mktemp)
     if [ "$TUI_TOOL" = "dialog" ]; then
-        dialog --mouse "$@"
+        dialog --mouse "$@" 2>"$tmpfile" </dev/tty >/dev/tty
     else
-        whiptail "$@"
+        whiptail "$@" 2>"$tmpfile" </dev/tty >/dev/tty
     fi
+    exit_code=$?
+    cat "$tmpfile"
+    rm -f "$tmpfile"
+    return $exit_code
 }
 
 _tui_connect() {
@@ -460,7 +469,7 @@ _tui_connect() {
     local choice
     choice=$(_d --title " Connect " \
         --menu "\nSelect a connection:" 16 56 8 \
-        "${items[@]}" 3>&1 1>&2 2>&3) || return
+        "${items[@]}") || return
 
     clear
     connect "$choice"
@@ -471,8 +480,7 @@ _tui_add() {
 
     while true; do
         name=$(_d --title " Add Connection (1/4) " --inputbox \
-            "\nConnection name  (letters, numbers, - and _):" 9 56 "" \
-            3>&1 1>&2 2>&3) || return
+            "\nConnection name  (letters, numbers, - and _):" 9 56 "") || return
         if [ -z "$name" ]; then
             _d --title " Error " --msgbox "\nName cannot be empty." 7 40
         elif [[ "$name" =~ [^a-zA-Z0-9_-] ]]; then
@@ -488,20 +496,20 @@ _tui_add() {
 
     while true; do
         username=$(_d --title " Add Connection (2/4) " --inputbox \
-            "\nUsername:" 9 56 "" 3>&1 1>&2 2>&3) || return
+            "\nUsername:" 9 56 "") || return
         [ -n "$username" ] && break
         _d --title " Error " --msgbox "\nUsername cannot be empty." 7 40
     done
 
     while true; do
         host=$(_d --title " Add Connection (3/4) " --inputbox \
-            "\nHostname or IP address:" 9 56 "" 3>&1 1>&2 2>&3) || return
+            "\nHostname or IP address:" 9 56 "") || return
         [ -n "$host" ] && break
         _d --title " Error " --msgbox "\nHostname cannot be empty." 7 40
     done
 
     port=$(_d --title " Add Connection (4/4) " --inputbox \
-        "\nPort:" 9 56 "22" 3>&1 1>&2 2>&3) || return
+        "\nPort:" 9 56 "22") || return
     port=${port:-22}
     if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
         _d --title " Warning " --msgbox "\nInvalid port — using default 22." 7 44
@@ -512,7 +520,7 @@ _tui_add() {
         "\nSave a password for this connection?" 7 50; then
         while true; do
             password=$(_d --title " Add Connection " --passwordbox \
-                "\nPassword (stored encrypted):" 9 56 3>&1 1>&2 2>&3) || break
+                "\nPassword (stored encrypted):" 9 56) || break
             if [ -n "$password" ]; then
                 save_password "$name" "$password"
                 break
@@ -561,7 +569,7 @@ _tui_delete() {
     local choice
     choice=$(_d --title " Delete Connection " \
         --menu "\nSelect a connection to delete:" 16 56 8 \
-        "${items[@]}" 3>&1 1>&2 2>&3) || return
+        "${items[@]}") || return
 
     _d --title " Confirm " --yesno \
         "\nDelete '$choice'?\n\nThis cannot be undone." 9 48 || return
@@ -588,14 +596,13 @@ launch_tui() {
     while true; do
         local choice
         choice=$(_d \
-            --title " Nedara Connect v0.3.2 " \
+            --title " Nedara Connect v0.4.0 " \
             --cancel-label "Exit" \
             --menu "\n  SSH Connection Manager\n" 14 54 4 \
             "connect" "  Connect to a saved host" \
             "add"     "  Add a new connection" \
             "list"    "  List all connections" \
-            "delete"  "  Delete a connection" \
-            3>&1 1>&2 2>&3) || break
+            "delete"  "  Delete a connection") || break
 
         case "$choice" in
             connect) _tui_connect ;;
