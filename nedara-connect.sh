@@ -361,7 +361,6 @@ delete_connection() {
     local name=$1
 
     if [ -z "$name" ]; then
-        print_header
         print_error "Please specify a connection name to delete"
         echo
         list_connections
@@ -369,7 +368,6 @@ delete_connection() {
     fi
 
     if ! connection_exists "$name"; then
-        print_header
         print_error "Connection '$name' not found"
         echo
         list_connections
@@ -396,7 +394,6 @@ connect() {
     local search=$1
 
     if [ -z "$search" ]; then
-        print_header
         print_error "Please specify a connection name"
         echo
         list_connections
@@ -407,7 +404,6 @@ connect() {
     connection_details=$(grep "^$search:" "$CONFIG_FILE" 2>/dev/null)
 
     if [ -z "$connection_details" ]; then
-        print_header
         print_error "Connection '$search' not found"
         echo
         list_connections
