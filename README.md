@@ -16,6 +16,7 @@ Easily store and reuse your SSH connection configurations without needing to rem
 - Stores connection data securely:
   - Configurations in `~/.ssh/connections.conf`
   - Encrypted passwords in `~/.ssh/connections_pass.gpg`
+  - Per-machine encryption key in `~/.ssh/connections_key`
 
 ## 📦 Installation
 
@@ -116,8 +117,14 @@ Each entry has the format:
 ```
 
 All sensitive data is stored securely:
-- Configurations in ~/.ssh/connections.conf (plain text)
-- Passwords in ~/.ssh/connections_pass.gpg (encrypted with GPG)
+
+| File | Purpose |
+|---|---|
+| `~/.ssh/connections.conf` | Connection list (name, user, host, port) |
+| `~/.ssh/connections_pass.gpg` | Passwords encrypted with GPG |
+| `~/.ssh/connections_key` | Per-machine encryption key (auto-generated) |
+
+The encryption key is generated automatically on first use using `/dev/urandom` and never leaves your machine. **Back it up if you want to be able to restore your saved passwords** — losing `connections_key` makes `connections_pass.gpg` unrecoverable.
 
 ---
 
@@ -138,6 +145,12 @@ Then later:
 ```bash
 nedara-connect staging
 ```
+
+---
+
+## ⬆️ Upgrading
+
+If you are upgrading from a version prior to **0.3.2**, your saved passwords will be migrated automatically on the first run. No action needed — the tool detects the old format and re-encrypts your passwords using the new per-machine key.
 
 ---
 

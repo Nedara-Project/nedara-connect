@@ -7,11 +7,14 @@
 # :repository: https://github.com/Nedara-Project/nedara-connect
 # :overview:   Installer for Nedara Connect SSH manager
 
+set -e
+trap 'print_error "Installation failed. Please check the error above."; exit 1' ERR
+
 # Configuration
 INSTALL_PATH="$HOME/.local/bin"
 SCRIPT_NAME="nedara-connect"
 SCRIPT_FILE="$INSTALL_PATH/$SCRIPT_NAME"
-# Locally this file should be exectued with chmod +x (./install.sh -> same for nedara-connect.sh)
+# Locally this file should be executed with chmod +x (./install.sh -> same for nedara-connect.sh)
 GITHUB_URL="https://raw.githubusercontent.com/Nedara-Project/nedara-connect/main/nedara-connect.sh"
 
 # Colors and formatting
@@ -228,9 +231,10 @@ install_nedara_connect() {
     # Installation summary
     print_color "$WHITE$BOLD" "📋 INSTALLATION SUMMARY"
     print_divider
-    print_info "Script installed to: ${GREEN}$SCRIPT_FILE"
-    print_info "Configuration will be stored in: ${GREEN}$HOME/.ssh/connections.conf"
-    print_info "Encrypted passwords will be stored in: ${GREEN}$HOME/.ssh/connections_pass.gpg"
+    print_info "Script installed to:          ${GREEN}$SCRIPT_FILE"
+    print_info "Configuration stored in:      ${GREEN}$HOME/.ssh/connections.conf"
+    print_info "Encrypted passwords stored in: ${GREEN}$HOME/.ssh/connections_pass.gpg"
+    print_info "Encryption key stored in:     ${GREEN}$HOME/.ssh/connections_key"
     echo
 
     # Dependency status
@@ -265,10 +269,6 @@ install_nedara_connect() {
     print_color "$GREEN$BOLD" "${ICON_ROCKET} Ready to manage your SSH connections!"
     echo
 }
-
-# Error handling
-set -e
-trap 'print_error "Installation failed. Please check the error above."; exit 1' ERR
 
 # Run installation
 install_nedara_connect

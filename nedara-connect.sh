@@ -7,11 +7,12 @@
 # :repository: https://github.com/Nedara-Project/nedara-connect
 # :overview:   Nedara-connect is a lightweight shell tool for managing and connecting to SSH hosts
 # :published:  2025-04-08
-# :modified:   2025-06-21
+# :modified:   2025-06-26
 
 # Configuration
 CONFIG_FILE="$HOME/.ssh/connections.conf"
 PASS_FILE="$HOME/.ssh/connections_pass.gpg"
+KEY_FILE="$HOME/.ssh/connections_key"
 CONFIG_DIR="$HOME/.ssh"
 
 # Configure GPG properly
@@ -93,6 +94,7 @@ mkdir -p "$CONFIG_DIR"
 # Create config file if it doesn't exist
 if [ ! -f "$CONFIG_FILE" ]; then
     touch "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
 fi
 
 # Create password file if it doesn't exist
@@ -100,6 +102,36 @@ if [ ! -f "$PASS_FILE" ]; then
     touch "$PASS_FILE"
     chmod 600 "$PASS_FILE"
 fi
+
+# Returns the per-machine encryption key, generating it on first use.
+# The key is stored in KEY_FILE (chmod 600) and never leaves the machine.
+get_encryption_key() {
+    if [ ! -f "$KEY_FILE" ]; then
+        od -A n -t x1 -N 32 /dev/urandom | tr -d ' \n' > "$KEY_FILE"
+        chmod 600 "$KEY_FILE"
+    fi
+    cat "$KEY_FILE"
+}
+
+# One-time migration: re-encrypts passwords from the legacy hardcoded passphrase
+# to the new per-machine key. Runs silently and only when needed (KEY_FILE absent).
+migrate_legacy_passwords() {
+    [ -s "$PASS_FILE" ] && [ ! -f "$KEY_FILE" ] || return 0
+
+    local legacy_content
+    legacy_content=$(gpg --batch --yes --quiet --pinentry-mode loopback \
+        --passphrase 'nedaraconnect' --decrypt "$PASS_FILE" 2>/dev/null) || return 0
+
+    [ -n "$legacy_content" ] || return 0
+
+    get_encryption_key > /dev/null
+    echo "$legacy_content" | gpg --batch --yes --quiet --pinentry-mode loopback \
+        --passphrase "$(get_encryption_key)" --symmetric --output "$PASS_FILE"
+    chmod 600 "$PASS_FILE"
+    print_info "Passwords migrated to new encryption key."
+}
+
+migrate_legacy_passwords
 
 # Function to validate input
 validate_input() {
@@ -129,7 +161,8 @@ connection_exists() {
 # Function to decrypt passwords file
 decrypt_passwords() {
     if [ -s "$PASS_FILE" ]; then
-        gpg --batch --yes --quiet --pinentry-mode loopback --passphrase 'nedaraconnect' --decrypt "$PASS_FILE" 2>/dev/null
+        gpg --batch --yes --quiet --pinentry-mode loopback \
+            --passphrase "$(get_encryption_key)" --decrypt "$PASS_FILE" 2>/dev/null
     else
         echo ""
     fi
@@ -138,7 +171,8 @@ decrypt_passwords() {
 # Function to encrypt passwords file
 encrypt_passwords() {
     local content=$1
-    echo "$content" | gpg --batch --yes --quiet --pinentry-mode loopback --passphrase 'nedaraconnect' --symmetric --output "$PASS_FILE"
+    echo "$content" | gpg --batch --yes --quiet --pinentry-mode loopback \
+        --passphrase "$(get_encryption_key)" --symmetric --output "$PASS_FILE"
     chmod 600 "$PASS_FILE"
 }
 
@@ -152,14 +186,18 @@ get_password() {
 save_password() {
     local name=$1
     local password=$2
-    local current_passwords=$(decrypt_passwords)
+    local current_passwords
+    current_passwords=$(decrypt_passwords)
 
-    # Remove existing password if any
+    # Remove existing entry for this connection
     current_passwords=$(echo "$current_passwords" | grep -v "^$name:")
 
-    # Add new password
     if [ -n "$password" ]; then
-        current_passwords+=$'\n'"$name:$password"
+        if [ -n "$current_passwords" ]; then
+            current_passwords+=$'\n'"$name:$password"
+        else
+            current_passwords="$name:$password"
+        fi
     fi
 
     encrypt_passwords "$current_passwords"
@@ -240,7 +278,7 @@ list_connections() {
         print_color "$YELLOW$BOLD" "${ICON_INFO} No connections found"
         print_info "Use ${CYAN}nedara-connect add${BLUE} to add a connection."
         echo
-        exit 1
+        return 0
     fi
 
     print_header
@@ -254,7 +292,9 @@ list_connections() {
         echo -e "     ${GRAY}${ICON_USER} User:${RESET} ${GREEN}${username}${RESET}"
         echo -e "     ${GRAY}${ICON_SERVER} Host:${RESET} ${BLUE}${host}${RESET}"
         echo -e "     ${GRAY}${ICON_PORT} Port:${RESET} ${YELLOW}${port}${RESET}"
-        if get_password "$name" >/dev/null; then
+        local stored_pass
+        stored_pass=$(get_password "$name")
+        if [ -n "$stored_pass" ]; then
             echo -e "     ${GRAY}${ICON_LOCK} Password:${RESET} ${GREEN}(stored securely)${RESET}"
         fi
         echo
@@ -292,7 +332,8 @@ delete_connection() {
     sed -i "/^$name:/d" "$CONFIG_FILE"
 
     # Remove password if exists
-    local current_passwords=$(decrypt_passwords | grep -v "^$name:")
+    local current_passwords
+    current_passwords=$(decrypt_passwords | grep -v "^$name:")
     encrypt_passwords "$current_passwords"
 
     print_success "Connection '$name' deleted successfully!"
@@ -310,7 +351,7 @@ connect() {
         exit 1
     fi
 
-    # Use grep to find the connection details in the config file
+    local connection_details
     connection_details=$(grep "^$search:" "$CONFIG_FILE" 2>/dev/null)
 
     if [ -z "$connection_details" ]; then
@@ -321,24 +362,11 @@ connect() {
         exit 1
     fi
 
-    # Extract the connection details
+    local name username host port
     IFS=: read -r name username host port <<< "$connection_details"
 
-    # Check if password is stored
-    local password=$(get_password "$name")
-    local ssh_command
-
-    if [ -n "$password" ]; then
-        # Use sshpass if password is available
-        if ! command -v sshpass &> /dev/null; then
-            print_error "sshpass is required for password authentication but not installed"
-            print_info "Please install sshpass or connect without saved password"
-            exit 1
-        fi
-        sshpass -p "$password" ssh -tt -o StrictHostKeyChecking=no -p "$port" "$username@$host"
-    else
-        ssh_command="ssh -p $port $username@$host"
-    fi
+    local password
+    password=$(get_password "$name")
 
     print_header
     print_color "$GREEN$BOLD" "${ICON_CONNECT} Connecting to $name"
@@ -356,10 +384,17 @@ connect() {
     print_divider
     echo
 
-    # Execute the SSH command
-    eval "$ssh_command"
+    if [ -n "$password" ]; then
+        if ! command -v sshpass &> /dev/null; then
+            print_error "sshpass is required for password authentication but not installed"
+            print_info "Please install sshpass or connect without saved password"
+            exit 1
+        fi
+        SSHPASS="$password" sshpass -e ssh -p "$port" "$username@$host"
+    else
+        ssh -p "$port" "$username@$host"
+    fi
 
-    # Show disconnection message
     echo
     print_divider
     print_info "Connection closed"
@@ -387,7 +422,8 @@ show_help() {
     echo
     print_divider
     print_info "Configuration stored in: ${CYAN}${CONFIG_FILE}"
-    print_info "Passwords stored in: ${CYAN}${PASS_FILE} (encrypted)"
+    print_info "Passwords stored in:     ${CYAN}${PASS_FILE} (encrypted)"
+    print_info "Encryption key in:       ${CYAN}${KEY_FILE} (keep this safe!)"
     echo
 }
 
