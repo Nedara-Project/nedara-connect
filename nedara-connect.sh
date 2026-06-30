@@ -1,6 +1,6 @@
 #!/bin/bash
 # :project:    Nedara Connect
-# :version:    0.4.0
+# :version:    0.4.1
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
@@ -59,7 +59,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.4.0${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.4.1${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
@@ -582,7 +582,7 @@ _tui_header() {
     clear
     echo
     print_color "$CYAN$BOLD" "  ╭─────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.4.0${CYAN}             │"
+    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.4.1${CYAN}             │"
     if [ -n "$sub" ]; then
         printf "${CYAN}${BOLD}  │  ${WHITE}%-43s${CYAN}│${RESET}\n" "$sub"
     fi
