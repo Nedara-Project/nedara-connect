@@ -560,12 +560,18 @@ update_self() {
 TUI_RESULT=""
 
 # Read one keypress from the terminal, including arrow key escape sequences.
+# Uses -t 1 (integer) for bash 3.2 compatibility on macOS (fractional -t unsupported).
 _tui_read_key() {
-    local key seq
+    local key c1 c2
     IFS= read -rsn1 key </dev/tty
     if [[ "$key" == $'\x1b' ]]; then
-        IFS= read -rsn2 -t 0.15 seq </dev/tty 2>/dev/null
-        key="${key}${seq}"
+        IFS= read -rsn1 -t 1 c1 </dev/tty 2>/dev/null
+        if [[ "$c1" == '[' || "$c1" == 'O' ]]; then
+            IFS= read -rsn1 -t 1 c2 </dev/tty 2>/dev/null
+            key="${key}${c1}${c2}"
+        else
+            key="${key}${c1}"
+        fi
     fi
     printf '%s' "$key"
 }
