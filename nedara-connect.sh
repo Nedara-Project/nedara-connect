@@ -1,13 +1,13 @@
 #!/bin/bash
 # :project:    Nedara Connect
-# :version:    0.4.1
+# :version:    0.4.2
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
 # :repository: https://github.com/Nedara-Project/nedara-connect
 # :overview:   Nedara-connect is a lightweight shell tool for managing and connecting to SSH hosts
 # :published:  2025-04-08
-# :modified:   2025-06-26
+# :modified:   2026-07-01
 
 # Configuration
 CONFIG_FILE="$HOME/.ssh/connections.conf"
@@ -59,7 +59,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.4.1${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.4.2${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
@@ -379,7 +379,10 @@ delete_connection() {
     print_divider
 
     # Remove from config file
-    sed -i "/^$name:/d" "$CONFIG_FILE"
+    local tmp
+    tmp=$(mktemp)
+    grep -v "^$name:" "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
 
     # Remove password if exists
     local current_passwords
@@ -387,6 +390,95 @@ delete_connection() {
     encrypt_passwords "$current_passwords"
 
     print_success "Connection '$name' deleted successfully!"
+    echo
+}
+
+edit_connection() {
+    local name=$1
+
+    if [ -z "$name" ]; then
+        print_error "Please specify a connection name to edit"
+        echo
+        list_connections
+        exit 1
+    fi
+
+    if ! connection_exists "$name"; then
+        print_error "Connection '$name' not found"
+        echo
+        list_connections
+        exit 1
+    fi
+
+    local connection_details
+    connection_details=$(grep "^$name:" "$CONFIG_FILE")
+    local cur_name cur_username cur_host cur_port
+    IFS=: read -r cur_name cur_username cur_host cur_port <<< "$connection_details"
+
+    print_header
+    print_color "$PURPLE$BOLD" "✏️  Editing connection '$name'"
+    print_divider
+    print_color "$DIM" "  Press Enter to keep the current value."
+    echo
+
+    while true; do
+        print_prompt "Username [$cur_username]: "
+        read -r username
+        username=${username:-$cur_username}
+        if validate_input "$username" "username"; then
+            break
+        fi
+    done
+
+    while true; do
+        print_prompt "Hostname or IP address [$cur_host]: "
+        read -r host
+        host=${host:-$cur_host}
+        if validate_input "$host" "hostname"; then
+            break
+        fi
+    done
+
+    print_prompt "Port [$cur_port]: "
+    read -r port
+    port=${port:-$cur_port}
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        print_error "Invalid port. Keeping current value $cur_port."
+        port=$cur_port
+    fi
+
+    local stored_pass
+    stored_pass=$(get_password "$name")
+    if [ -n "$stored_pass" ]; then
+        print_prompt "Update saved password? [y/N] "
+    else
+        print_prompt "Add a password for this connection? [y/N] "
+    fi
+    read -r update_pass
+    if [[ "$update_pass" =~ ^[Yy]$ ]]; then
+        while true; do
+            print_prompt "New password (will be stored encrypted): "
+            read -rs password
+            echo
+            if validate_input "$password" "password"; then
+                save_password "$name" "$password"
+                print_success "Password updated securely!"
+                break
+            fi
+        done
+    fi
+
+    local tmp
+    tmp=$(mktemp)
+    grep -v "^$name:" "$CONFIG_FILE" > "$tmp"
+    echo "$name:$username:$host:$port" >> "$tmp"
+    mv "$tmp" "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
+
+    echo
+    print_divider
+    print_success "Connection '$name' updated successfully!"
+    print_info "Details: ${CYAN}${username}@${host}:${port}"
     echo
 }
 
@@ -463,6 +555,7 @@ show_help() {
     echo
     echo -e "  ${GREEN}${BOLD}nedara-connect add${RESET}           ${GRAY}# Add a new connection${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect list${RESET}          ${GRAY}# List all connections${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect edit <name>${RESET}   ${GRAY}# Edit an existing connection${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect delete <name>${RESET} ${GRAY}# Delete a connection${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect <name>${RESET}        ${GRAY}# Connect to a saved connection${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect update${RESET}        ${GRAY}# Check for updates and upgrade${RESET}"
@@ -470,9 +563,10 @@ show_help() {
     echo
     print_color "$CYAN$BOLD" "EXAMPLES:"
     echo
-    echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect add${RESET}      ${DIM}# Add a new connection${RESET}"
-    echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect prod${RESET}     ${DIM}# Connect to 'prod' server${RESET}"
-    echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect delete staging${RESET}  ${DIM}# Delete 'staging' connection${RESET}"
+    echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect add${RESET}           ${DIM}# Add a new connection${RESET}"
+    echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect prod${RESET}          ${DIM}# Connect to 'prod' server${RESET}"
+    echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect edit staging${RESET}  ${DIM}# Edit 'staging' connection${RESET}"
+    echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect delete staging${RESET} ${DIM}# Delete 'staging' connection${RESET}"
     echo
     print_divider
     print_info "Configuration stored in: ${CYAN}${CONFIG_FILE}"
@@ -582,7 +676,7 @@ _tui_header() {
     clear
     echo
     print_color "$CYAN$BOLD" "  ╭─────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.4.1${CYAN}             │"
+    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.4.2${CYAN}             │"
     if [ -n "$sub" ]; then
         printf "${CYAN}${BOLD}  │  ${WHITE}%-43s${CYAN}│${RESET}\n" "$sub"
     fi
@@ -791,7 +885,10 @@ _tui_delete() {
     echo
     _tui_yesno "Confirm deletion" || return
 
-    sed -i "/^$choice:/d" "$CONFIG_FILE"
+    local tmp
+    tmp=$(mktemp)
+    grep -v "^$choice:" "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
     local remaining
     remaining=$(decrypt_passwords | grep -v "^$choice:")
     encrypt_passwords "$remaining"
@@ -803,18 +900,101 @@ _tui_delete() {
     IFS= read -rsn1 </dev/tty
 }
 
+_tui_edit() {
+    if [ ! -s "$CONFIG_FILE" ]; then
+        _tui_message "Edit" "No connections found."
+        return
+    fi
+
+    local -a args=()
+    while IFS=: read -r name username host port; do
+        args+=("$name" "$name  ($username@$host:$port)")
+    done < "$CONFIG_FILE"
+
+    _tui_menu "Edit a connection" "${args[@]}" || return
+    local choice="$TUI_RESULT"
+
+    local connection_details
+    connection_details=$(grep "^$choice:" "$CONFIG_FILE")
+    local cur_name cur_username cur_host cur_port
+    IFS=: read -r cur_name cur_username cur_host cur_port <<< "$connection_details"
+
+    _tui_header "Edit: $choice"
+    print_color "$DIM" "  Press Enter to keep the current value."
+    echo
+
+    local username host port
+
+    while true; do
+        _tui_input "Username" "$cur_username"
+        username="$TUI_RESULT"
+        [ -n "$username" ] && break
+        print_error "Username cannot be empty."
+    done
+
+    while true; do
+        _tui_input "Hostname or IP address" "$cur_host"
+        host="$TUI_RESULT"
+        [ -n "$host" ] && break
+        print_error "Hostname cannot be empty."
+    done
+
+    _tui_input "Port" "$cur_port"
+    port="${TUI_RESULT:-$cur_port}"
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        print_error "Invalid port — keeping current value $cur_port."
+        port=$cur_port
+    fi
+
+    local stored_pass update_label
+    stored_pass=$(get_password "$choice")
+    if [ -n "$stored_pass" ]; then
+        update_label="Update saved password?"
+    else
+        update_label="Add a password for this connection?"
+    fi
+    if _tui_yesno "$update_label"; then
+        local password
+        while true; do
+            _tui_password "New password (stored encrypted)"
+            password="$TUI_RESULT"
+            if [ -n "$password" ]; then
+                save_password "$choice" "$password"
+                break
+            fi
+            print_error "Password cannot be empty."
+        done
+    fi
+
+    local tmp
+    tmp=$(mktemp)
+    grep -v "^$choice:" "$CONFIG_FILE" > "$tmp"
+    echo "$choice:$username:$host:$port" >> "$tmp"
+    mv "$tmp" "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
+
+    echo
+    print_success "Connection '$choice' updated!"
+    print_info "  $username@$host:$port"
+    echo
+    print_color "$DIM" "  Press any key to continue..."
+    IFS= read -rsn1 </dev/tty
+}
+
 launch_tui() {
     while true; do
         _tui_menu "" \
             "connect" "Connect to a saved host" \
             "add"     "Add a new connection" \
             "list"    "List all connections" \
+            "edit"    "Edit a connection" \
             "delete"  "Delete a connection" || break
 
         case "$TUI_RESULT" in
             connect) _tui_connect ;;
             add)     _tui_add ;;
             list)    _tui_list ;;
+            edit)    _tui_edit ;;
             delete)  _tui_delete ;;
         esac
     done
@@ -829,6 +1009,9 @@ case "$1" in
         ;;
     "list")
         list_connections
+        ;;
+    "edit")
+        edit_connection "$2"
         ;;
     "delete")
         delete_connection "$2"
