@@ -1,13 +1,13 @@
 #!/bin/bash
 # :project:    Nedara Connect
-# :version:    0.4.2
+# :version:    0.5.0
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
 # :repository: https://github.com/Nedara-Project/nedara-connect
 # :overview:   Nedara-connect is a lightweight shell tool for managing and connecting to SSH hosts
 # :published:  2025-04-08
-# :modified:   2026-07-01
+# :modified:   2026-07-08
 
 # Configuration
 CONFIG_FILE="$HOME/.ssh/connections.conf"
@@ -16,6 +16,11 @@ KEY_FILE="$HOME/.ssh/connections_key"
 VERSION_CACHE="$HOME/.ssh/nedara_version_cache"
 CONFIG_DIR="$HOME/.ssh"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/Nedara-Project/nedara-connect/main/nedara-connect.sh"
+
+# Optional cloud sync (Nedara Connect Web) — nothing here runs unless the
+# user explicitly opts in via `nedara-connect sync login`.
+SYNC_CONFIG_FILE="$HOME/.ssh/connections_sync.conf"
+SYNC_TOKEN_FILE="$HOME/.ssh/connections_sync_token.gpg"
 
 # Configure GPG properly
 export GPG_TTY=$(tty)
@@ -59,7 +64,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.4.2${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.5.0${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
@@ -253,6 +258,322 @@ save_password() {
     fi
 
     encrypt_passwords "$current_passwords"
+}
+
+# ─── Cloud Sync (optional) ───────────────────────────────────────────────────
+#
+# Everything below is 100% opt-in. Nothing here runs unless the user
+# explicitly runs `nedara-connect sync login`; existing users who never touch
+# sync see no behavior change on add/list/edit/delete/connect/tui/update.
+
+# Function to check for sync-only dependencies (curl is already required elsewhere)
+_check_sync_deps() {
+    if ! command -v curl &>/dev/null; then
+        print_error "curl is required for sync but not installed."
+        return 1
+    fi
+    if ! command -v jq &>/dev/null; then
+        print_error "jq is required for sync but not installed."
+        print_info "Install it with your package manager, e.g. 'brew install jq' or 'apt-get install jq'."
+        return 1
+    fi
+    return 0
+}
+
+# Function to read a key's value from the sync config file
+_sync_config_get() {
+    local key=$1
+    [ -f "$SYNC_CONFIG_FILE" ] || return 0
+    grep "^$key:" "$SYNC_CONFIG_FILE" 2>/dev/null | cut -d: -f2- | tr -d '\n'
+}
+
+# Function to write/update a key's value in the sync config file
+_sync_config_set() {
+    local key=$1
+    local value=$2
+    local tmp
+    tmp=$(mktemp)
+    [ -f "$SYNC_CONFIG_FILE" ] && grep -v "^$key:" "$SYNC_CONFIG_FILE" > "$tmp"
+    echo "$key:$value" >> "$tmp"
+    mv "$tmp" "$SYNC_CONFIG_FILE"
+    chmod 600 "$SYNC_CONFIG_FILE"
+}
+
+is_sync_enabled() {
+    [ "$(_sync_config_get enabled)" = "yes" ]
+}
+
+# Function to decrypt the stored personal API token (PAT)
+decrypt_sync_token() {
+    if [ -s "$SYNC_TOKEN_FILE" ]; then
+        gpg --batch --yes --quiet --pinentry-mode loopback \
+            --passphrase "$(get_encryption_key)" --decrypt "$SYNC_TOKEN_FILE" 2>/dev/null \
+            | grep '^token:' | cut -d: -f2- | tr -d '\n'
+    fi
+}
+
+# Function to encrypt and store the personal API token (PAT)
+encrypt_sync_token() {
+    local token=$1
+    echo "token:$token" | gpg --batch --yes --quiet --pinentry-mode loopback \
+        --passphrase "$(get_encryption_key)" --symmetric --output "$SYNC_TOKEN_FILE"
+    chmod 600 "$SYNC_TOKEN_FILE"
+}
+
+# Function to call the Nedara Connect Web REST API, authenticated with the PAT.
+# Usage: _curl_json <method> <path> [json_body]
+_curl_json() {
+    local method=$1
+    local path=$2
+    local body=$3
+    local endpoint
+    endpoint=$(_sync_config_get endpoint)
+    local token
+    token=$(decrypt_sync_token)
+
+    if [ -n "$body" ]; then
+        curl -sf --max-time 15 -X "$method" "${endpoint}${path}" \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            -d "$body"
+    else
+        curl -sf --max-time 15 -X "$method" "${endpoint}${path}" \
+            -H "Authorization: Bearer $token"
+    fi
+}
+
+sync_login() {
+    print_header
+    print_color "$PURPLE$BOLD" "☁️  Connect to Nedara Connect Web"
+    print_divider
+    _check_sync_deps || { echo; exit 1; }
+
+    print_prompt "Endpoint [https://connect.nedara.org]: "
+    read -r endpoint
+    endpoint=${endpoint:-https://connect.nedara.org}
+    endpoint=${endpoint%/}
+
+    print_prompt "Personal API token: "
+    read -rs token
+    echo
+    if [ -z "$token" ]; then
+        print_error "A token is required. Generate one from the web app's API Tokens page."
+        echo
+        exit 1
+    fi
+
+    local response
+    response=$(curl -sf --max-time 15 "${endpoint}/api/cli/verify" -H "Authorization: Bearer $token")
+    if [ -z "$response" ] || ! echo "$response" | jq -e '.valid' >/dev/null 2>&1; then
+        print_error "Could not verify this token against ${endpoint}."
+        echo
+        exit 1
+    fi
+
+    encrypt_sync_token "$token"
+    _sync_config_set "endpoint" "$endpoint"
+    _sync_config_set "enabled" "yes"
+
+    local username
+    username=$(echo "$response" | jq -r '.user.username')
+    echo
+    print_success "Signed in as ${username} (${endpoint})"
+    print_info "Use ${CYAN}nedara-connect sync push${BLUE} / ${CYAN}sync pull${BLUE} to synchronize."
+    echo
+}
+
+sync_status() {
+    print_header
+    print_color "$WHITE$BOLD" "☁️  Sync Status"
+    print_divider
+    if ! is_sync_enabled; then
+        print_info "Sync is ${YELLOW}not configured${BLUE}. Run ${CYAN}nedara-connect sync login${BLUE} to enable it."
+        echo
+        return 0
+    fi
+
+    local endpoint
+    endpoint=$(_sync_config_get endpoint)
+    print_info "Endpoint:      ${CYAN}${endpoint}"
+
+    _check_sync_deps || { echo; exit 1; }
+    local response
+    response=$(curl -sf --max-time 15 "${endpoint}/api/cli/verify" -H "Authorization: Bearer $(decrypt_sync_token)")
+    if [ -n "$response" ] && echo "$response" | jq -e '.valid' >/dev/null 2>&1; then
+        print_info "Signed in as: ${GREEN}$(echo "$response" | jq -r '.user.username')"
+    else
+        print_color "$RED$BOLD" "${ICON_ERROR} Token is invalid or revoked."
+    fi
+
+    local last_push last_pull
+    last_push=$(_sync_config_get last_push)
+    last_pull=$(_sync_config_get last_pull)
+    print_info "Last push:     ${CYAN}${last_push:-never}"
+    print_info "Last pull:     ${CYAN}${last_pull:-never}"
+    echo
+}
+
+sync_push() {
+    if ! is_sync_enabled; then
+        print_error "Sync is not configured. Run 'nedara-connect sync login' first."
+        exit 1
+    fi
+    _check_sync_deps || exit 1
+
+    local directory_id=$1
+    print_header
+    print_color "$PURPLE$BOLD" "☁️  Pushing local connections..."
+    print_divider
+
+    if [ ! -s "$CONFIG_FILE" ]; then
+        print_info "No local connections to push."
+        echo
+        return 0
+    fi
+
+    local connections_json="[]"
+    while IFS=: read -r name username host port; do
+        local password entry
+        password=$(get_password "$name")
+        entry=$(jq -n --arg name "$name" --arg host "$host" --argjson port "$port" \
+            --arg username "$username" --arg password "$password" \
+            '{name: $name, host: $host, port: $port, username: $username, password: $password}')
+        connections_json=$(echo "$connections_json" | jq --argjson e "$entry" '. + [$e]')
+    done < "$CONFIG_FILE"
+
+    local body
+    if [ -n "$directory_id" ]; then
+        body=$(jq -n --argjson connections "$connections_json" --arg dir "$directory_id" \
+            '{connections: $connections, directory_id: $dir}')
+    else
+        body=$(jq -n --argjson connections "$connections_json" '{connections: $connections}')
+    fi
+
+    local response
+    response=$(_curl_json POST "/api/cli/connections" "$body")
+    if [ -z "$response" ]; then
+        print_error "Push failed. Check your connection and token."
+        exit 1
+    fi
+
+    local created updated conflicts
+    created=$(echo "$response" | jq -r '.created | length')
+    updated=$(echo "$response" | jq -r '.updated | length')
+    conflicts=$(echo "$response" | jq -r '.conflicts | length')
+
+    print_success "Created: ${created}  •  Updated: ${updated}  •  Conflicts: ${conflicts}"
+    if [ "$conflicts" -gt 0 ]; then
+        print_color "$YELLOW" "  Conflicting names (not overwritten remotely): $(echo "$response" | jq -r '.conflicts | join(", ")')"
+    fi
+    _sync_config_set "last_push" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo
+}
+
+sync_pull() {
+    if ! is_sync_enabled; then
+        print_error "Sync is not configured. Run 'nedara-connect sync login' first."
+        exit 1
+    fi
+    _check_sync_deps || exit 1
+
+    local force=$1
+    print_header
+    print_color "$PURPLE$BOLD" "☁️  Pulling remote connections..."
+    print_divider
+
+    local response
+    response=$(_curl_json GET "/api/cli/connections")
+    if [ -z "$response" ]; then
+        print_error "Pull failed. Check your connection and token."
+        exit 1
+    fi
+
+    local added=0 skipped=0
+    while IFS=$'\t' read -r name host port username password; do
+        [ -n "$name" ] || continue
+        if connection_exists "$name"; then
+            local existing existing_host existing_username
+            existing=$(grep "^$name:" "$CONFIG_FILE")
+            IFS=: read -r _ existing_username existing_host _ <<< "$existing"
+            if [ "$existing_host" = "$host" ] && [ "$existing_username" = "$username" ]; then
+                continue
+            fi
+            if [ "$force" != "--force" ]; then
+                print_color "$YELLOW" "  ⚠ Conflict on '${name}' (local: ${existing_username}@${existing_host}, remote: ${username}@${host}) — skipped. Use --force to overwrite."
+                skipped=$((skipped + 1))
+                continue
+            fi
+            local tmp
+            tmp=$(mktemp)
+            grep -v "^$name:" "$CONFIG_FILE" > "$tmp"
+            echo "$name:$username:$host:$port" >> "$tmp"
+            mv "$tmp" "$CONFIG_FILE"
+            chmod 600 "$CONFIG_FILE"
+        else
+            echo "$name:$username:$host:$port" >> "$CONFIG_FILE"
+        fi
+        [ -n "$password" ] && save_password "$name" "$password"
+        added=$((added + 1))
+    done < <(echo "$response" | jq -r '(.personal + ([.directories[].connections[]?])) | .[] | [.name, .host, (.port|tostring), .username, (.password // "")] | @tsv')
+
+    print_success "Pulled: ${added}  •  Skipped (conflicts): ${skipped}"
+    _sync_config_set "last_pull" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo
+}
+
+sync_directories() {
+    if ! is_sync_enabled; then
+        print_error "Sync is not configured. Run 'nedara-connect sync login' first."
+        exit 1
+    fi
+    _check_sync_deps || exit 1
+
+    print_header
+    print_color "$WHITE$BOLD" "☁️  Shared Directories"
+    print_divider
+
+    local response
+    response=$(_curl_json GET "/api/cli/directories")
+    if [ -z "$response" ] || [ "$(echo "$response" | jq 'length')" -eq 0 ]; then
+        print_info "No shared directories available to this account."
+        echo
+        return 0
+    fi
+
+    echo "$response" | jq -r '.[] | "\(.id)\t\(.name)\t\(.org_name)"' | while IFS=$'\t' read -r id name org; do
+        echo -e "  ${CYAN}${id}${RESET}  ${WHITE}${BOLD}${name}${RESET} ${GRAY}(${org})${RESET}"
+    done
+    echo
+    print_info "Push to a directory with: ${CYAN}nedara-connect sync push <directory-id>"
+    echo
+}
+
+sync_logout() {
+    print_header
+    print_color "$WHITE$BOLD" "☁️  Disabling Sync"
+    print_divider
+    rm -f "$SYNC_TOKEN_FILE"
+    _sync_config_set "enabled" "no"
+    print_success "Sync disabled. Your local connections are untouched."
+    echo
+}
+
+sync_dispatch() {
+    local action=$1
+    shift
+    case "$action" in
+        login)       sync_login ;;
+        status)      sync_status ;;
+        push)        sync_push "$@" ;;
+        pull)        sync_pull "$@" ;;
+        directories) sync_directories ;;
+        logout)      sync_logout ;;
+        *)
+            print_error "Unknown sync command: ${action:-<none>}"
+            print_info "Usage: nedara-connect sync {login|status|push|pull|directories|logout}"
+            exit 1
+            ;;
+    esac
 }
 
 add_connection() {
@@ -561,6 +882,15 @@ show_help() {
     echo -e "  ${GREEN}${BOLD}nedara-connect update${RESET}        ${GRAY}# Check for updates and upgrade${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect help${RESET}          ${GRAY}# Show this help message${RESET}"
     echo
+    print_color "$CYAN$BOLD" "SYNC COMMANDS (optional, requires Nedara Connect Web):"
+    echo
+    echo -e "  ${GREEN}${BOLD}nedara-connect sync login${RESET}        ${GRAY}# Connect this machine with a personal API token${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect sync status${RESET}       ${GRAY}# Show sync status${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect sync push [dir-id]${RESET} ${GRAY}# Push local connections (optionally to a shared directory)${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect sync pull [--force]${RESET} ${GRAY}# Pull remote connections (--force overwrites conflicts)${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect sync directories${RESET}  ${GRAY}# List directories shared with you${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect sync logout${RESET}       ${GRAY}# Disable sync and remove the stored token${RESET}"
+    echo
     print_color "$CYAN$BOLD" "EXAMPLES:"
     echo
     echo -e "  ${YELLOW}${ICON_BULLET} ${WHITE}nedara-connect add${RESET}           ${DIM}# Add a new connection${RESET}"
@@ -572,6 +902,8 @@ show_help() {
     print_info "Configuration stored in: ${CYAN}${CONFIG_FILE}"
     print_info "Passwords stored in:     ${CYAN}${PASS_FILE} (encrypted)"
     print_info "Encryption key in:       ${CYAN}${KEY_FILE} (keep this safe!)"
+    print_info "Sync config in:          ${CYAN}${SYNC_CONFIG_FILE} (only created if you use sync)"
+    print_info "Sync token in:           ${CYAN}${SYNC_TOKEN_FILE} (encrypted, only created if you use sync)"
     echo
 }
 
@@ -676,7 +1008,7 @@ _tui_header() {
     clear
     echo
     print_color "$CYAN$BOLD" "  ╭─────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.4.2${CYAN}             │"
+    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.5.0${CYAN}             │"
     if [ -n "$sub" ]; then
         printf "${CYAN}${BOLD}  │  ${WHITE}%-43s${CYAN}│${RESET}\n" "$sub"
     fi
@@ -1021,6 +1353,9 @@ case "$1" in
         ;;
     "update")
         update_self
+        ;;
+    "sync")
+        sync_dispatch "$2" "$3"
         ;;
     "help"|"-h"|"--help")
         show_help

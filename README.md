@@ -18,6 +18,7 @@ Easily store and reuse your SSH connection configurations without needing to rem
   - Configurations in `~/.ssh/connections.conf`
   - Encrypted passwords in `~/.ssh/connections_pass.gpg`
   - Per-machine encryption key in `~/.ssh/connections_key`
+- Optional cloud sync with [Nedara Connect Web](https://connect.nedara.org) — sync connections across machines and share them with your team. 100% opt-in: nothing changes for you if you never run `nedara-connect sync login`.
 
 ## 📦 Installation
 
@@ -26,14 +27,15 @@ Easily store and reuse your SSH connection configurations without needing to rem
 Ensure you have these installed:
 - `gpg` (GNU Privacy Guard) - for password encryption
 - `sshpass` - for automatic password authentication (only needed if using password storage)
+- `jq` - for JSON parsing (only needed if using [optional cloud sync](#%EF%B8%8F-optional-cloud-sync))
 
 Install on Ubuntu/Debian:
 ```bash
-sudo apt-get install gpg sshpass
+sudo apt-get install gpg sshpass jq
 ```
 Install on macOS (using Homebrew):
 ```bash
-brew install gpg sshpass
+brew install gpg sshpass jq
 ```
 
 ### 1. Clone the Repository
@@ -120,6 +122,42 @@ All sensitive data is stored securely:
 | `~/.ssh/connections_key` | Per-machine encryption key (auto-generated) |
 
 The encryption key is generated automatically on first use using `/dev/urandom` and never leaves your machine. **Back it up if you want to be able to restore your saved passwords** — losing `connections_key` makes `connections_pass.gpg` unrecoverable.
+
+---
+
+## ☁️ Optional Cloud Sync
+
+[Nedara Connect Web](https://connect.nedara.org) is a companion web app that lets you sync your SSH connections across machines and share them with your team through Organizations & Directories. **Sync is entirely opt-in** — nothing changes for existing users who never touch it, and every sync action is a command you run explicitly (no background/automatic syncing).
+
+Passwords you choose to sync are stored **encrypted server-side**; if you'd rather keep everything local-only, simply don't run `sync push` (or don't include a password when adding a connection you plan to sync).
+
+### Getting started
+
+1. Create an account on [Nedara Connect Web](https://connect.nedara.org) and generate a **personal API token** from the "API Tokens" page.
+2. Connect this machine:
+   ```bash
+   nedara-connect sync login
+   ```
+
+### Sync commands
+
+```bash
+nedara-connect sync login              # Connect this machine with a personal API token
+nedara-connect sync status             # Show sync status (endpoint, signed-in user, last push/pull)
+nedara-connect sync push [dir-id]      # Push local connections (optionally into a shared directory)
+nedara-connect sync pull [--force]     # Pull remote connections (--force overwrites name conflicts)
+nedara-connect sync directories        # List directories shared with you by your team
+nedara-connect sync logout             # Disable sync and remove the stored token
+```
+
+`push` never deletes remote data, and `pull` never silently overwrites a local connection with different data unless you pass `--force` — conflicts are reported instead so you can decide what to do.
+
+Sync-related state is stored alongside your existing connection files:
+
+| File | Purpose |
+|---|---|
+| `~/.ssh/connections_sync.conf` | Sync settings (enabled flag, endpoint, last push/pull timestamps) |
+| `~/.ssh/connections_sync_token.gpg` | Your personal API token, GPG-encrypted with the same per-machine key as your passwords |
 
 ---
 
