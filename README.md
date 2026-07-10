@@ -4,8 +4,6 @@
 
 Easily store and reuse your SSH connection configurations without needing to remember long commands or edit your `~/.ssh/config`.
 
-![interface](image.png)
-
 ## ✨ Features
 
 - Add new SSH connections with a friendly prompt
