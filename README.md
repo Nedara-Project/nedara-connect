@@ -108,8 +108,10 @@ All connections are stored in:
 Each entry has the format:
 
 ```
-<name>:<username>:<host>:<port>
+<name>:<username>:<host>:<port>:<directory_id>
 ```
+
+The `directory_id` field is only used when you sync with Nedara Connect Web — it's empty for personal connections ("My Connections"). It's fully backward-compatible: older 4-field entries are read exactly as before.
 
 All sensitive data is stored securely:
 
@@ -142,13 +144,26 @@ Passwords you choose to sync are stored **encrypted server-side**; if you'd rath
 ```bash
 nedara-connect sync login              # Connect this machine with a personal API token
 nedara-connect sync status             # Show sync status (endpoint, signed-in user, last push/pull)
-nedara-connect sync push [dir-id]      # Push local connections (optionally into a shared directory)
-nedara-connect sync pull [--force]     # Pull remote connections (--force overwrites name conflicts)
-nedara-connect sync directories        # List directories shared with you by your team
+nedara-connect sync push               # Push every local connection to its own location (My Connections + each shared directory)
+nedara-connect sync push <dir-id>      # Push every local connection into one specific shared directory
+nedara-connect sync pull [--force]     # Pull remote connections, recreating My Connections + shared directories locally
+nedara-connect sync directories        # List directories shared with you, with your access level on each
 nedara-connect sync logout             # Disable sync and remove the stored token
 ```
 
 `push` never deletes remote data, and `pull` never silently overwrites a local connection with different data unless you pass `--force` — conflicts are reported instead so you can decide what to do.
+
+### My Connections vs. shared directories
+
+Just like the web app, the CLI distinguishes your personal **My Connections** from **shared directories** owned by your team's Organizations:
+
+- `nedara-connect list` / the TUI group connections by location.
+- `add`/`edit` let you assign (or move) a connection to a shared directory, once you've pulled/listed directories at least once (`sync pull` or `sync directories`).
+- A plain `nedara-connect sync push` pushes everything to where it's tagged — personal connections stay personal, directory connections go back to their directory.
+
+### Directory permissions
+
+Organizations can grant each member one of three access levels per directory: **read-only**, **read-write**, or **read-write-delete**. Read-only lets you pull/view a directory's connections but not push changes to it; the server enforces this regardless of what the CLI shows locally, so a refused push always fails safely.
 
 Sync-related state is stored alongside your existing connection files:
 
@@ -156,6 +171,7 @@ Sync-related state is stored alongside your existing connection files:
 |---|---|
 | `~/.ssh/connections_sync.conf` | Sync settings (enabled flag, endpoint, last push/pull timestamps) |
 | `~/.ssh/connections_sync_token.gpg` | Your personal API token, GPG-encrypted with the same per-machine key as your passwords |
+| `~/.ssh/connections_directories.conf` | Local cache of shared directories you can see (id, name, org, your access level) |
 
 ---
 

@@ -1,13 +1,13 @@
 #!/bin/bash
 # :project:    Nedara Connect
-# :version:    0.5.0
+# :version:    0.6.0
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
 # :repository: https://github.com/Nedara-Project/nedara-connect
 # :overview:   Nedara-connect is a lightweight shell tool for managing and connecting to SSH hosts
 # :published:  2025-04-08
-# :modified:   2026-07-08
+# :modified:   2026-07-13
 
 # Configuration
 CONFIG_FILE="$HOME/.ssh/connections.conf"
@@ -21,6 +21,12 @@ GITHUB_RAW_URL="https://raw.githubusercontent.com/Nedara-Project/nedara-connect/
 # user explicitly opts in via `nedara-connect sync login`.
 SYNC_CONFIG_FILE="$HOME/.ssh/connections_sync.conf"
 SYNC_TOKEN_FILE="$HOME/.ssh/connections_sync_token.gpg"
+
+# Local cache of shared directories known from the last `sync pull`/`sync
+# directories` (id:name:org_name:role per line). Used to group connections
+# into "My Connections" + shared directories, and to offer a location picker
+# in add/edit. Only ever populated for users who opted into sync.
+DIRECTORIES_CACHE_FILE="$HOME/.ssh/connections_directories.conf"
 
 # Configure GPG properly
 export GPG_TTY=$(tty)
@@ -64,7 +70,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.5.0${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.6.0${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
@@ -215,6 +221,96 @@ connection_exists() {
     grep -q "^$name:" "$CONFIG_FILE" 2>/dev/null
 }
 
+# ─── Directory grouping ("My Connections" + shared directories) ─────────────
+#
+# Each CONFIG_FILE line has an optional 5th field: the shared directory_id a
+# connection was synced into (empty/absent = personal "My Connections").
+# Old 4-field lines are unaffected — a missing 5th field simply reads as
+# empty, which is exactly the personal scope. No migration is required.
+
+# Prints the CONFIG_FILE lines belonging to one location.
+# Usage: _connections_in_group <directory_id>  (empty = "My Connections")
+_connections_in_group() {
+    local dir_id="$1"
+    awk -F: -v d="$dir_id" '{ if ($5 == d) print }' "$CONFIG_FILE" 2>/dev/null
+}
+
+# Human label for a directory id, using the local cache populated by
+# `sync pull` / `sync directories`. Falls back gracefully if the directory is
+# unknown locally (e.g. cache not refreshed since it was created/renamed).
+_directory_label() {
+    local dir_id="$1"
+    if [ -z "$dir_id" ]; then
+        echo "My Connections"
+        return 0
+    fi
+
+    local line
+    line=$([ -s "$DIRECTORIES_CACHE_FILE" ] && awk -F: -v id="$dir_id" '$1==id{print; exit}' "$DIRECTORIES_CACHE_FILE" 2>/dev/null)
+    if [ -n "$line" ]; then
+        local _id name org _role
+        IFS=: read -r _id name org _role <<< "$line"
+        echo "${name} (${org})"
+    else
+        echo "Shared directory (${dir_id})"
+    fi
+}
+
+# The access role ('read-only' / 'read-write' / 'read-write-delete') this
+# machine's account has on a directory, per the local cache. Empty if unknown.
+_directory_role() {
+    local dir_id="$1"
+    [ -s "$DIRECTORIES_CACHE_FILE" ] || return 0
+    awk -F: -v id="$dir_id" '$1==id{print $4; exit}' "$DIRECTORIES_CACHE_FILE" 2>/dev/null
+}
+
+# Refreshes the local directories cache from a JSON array of
+# {id, name, org_name, role} objects (as returned by the CLI API).
+_write_directories_cache() {
+    local directories_json="$1"
+    local tmp
+    tmp=$(mktemp)
+    echo "$directories_json" | jq -r '.[] | [.id, .name, .org_name, (.role // "")] | @tsv' \
+        | tr '\t' ':' > "$tmp"
+    mv "$tmp" "$DIRECTORIES_CACHE_FILE"
+    chmod 600 "$DIRECTORIES_CACHE_FILE"
+}
+
+# Non-interactive location picker: prints "0) My Connections" then each known
+# shared directory. Only ever shown if directories are known locally (i.e.
+# the user has used sync at least once) — never forces sync on anyone.
+_print_location_choices() {
+    echo -e "     ${GRAY}0)${RESET} My Connections"
+    awk -F: '{printf "     %d) %s (%s)\n", NR, $2, $3}' "$DIRECTORIES_CACHE_FILE"
+}
+
+# Prompts for a location (only if directories are known locally). Result is
+# stored in LOCATION_RESULT; defaults to $1 (current/personal) if skipped,
+# cancelled, or sync was never used.
+_prompt_location() {
+    local default_id="${1:-}"
+    LOCATION_RESULT="$default_id"
+    [ -s "$DIRECTORIES_CACHE_FILE" ] || return 0
+
+    echo
+    print_info "Location:"
+    _print_location_choices
+    local default_index
+    default_index=$(awk -F: -v id="$default_id" '$1==id{print NR}' "$DIRECTORIES_CACHE_FILE")
+    default_index=${default_index:-0}
+    print_prompt "Choice [$default_index]: "
+    read -r choice
+    choice=${choice:-$default_index}
+
+    if [ -z "$choice" ] || [ "$choice" = "0" ]; then
+        LOCATION_RESULT=""
+    elif [[ "$choice" =~ ^[0-9]+$ ]]; then
+        local picked
+        picked=$(awk -F: -v n="$choice" 'NR==n{print $1}' "$DIRECTORIES_CACHE_FILE")
+        LOCATION_RESULT="${picked:-$default_id}"
+    fi
+}
+
 # Function to decrypt passwords file
 decrypt_passwords() {
     if [ -s "$PASS_FILE" ]; then
@@ -321,6 +417,9 @@ encrypt_sync_token() {
 }
 
 # Function to call the Nedara Connect Web REST API, authenticated with the PAT.
+# Always returns the response body, even on 4xx/5xx (so callers can inspect a
+# `.error` field with `_print_api_error`) — an empty result means the request
+# never reached the server at all.
 # Usage: _curl_json <method> <path> [json_body]
 _curl_json() {
     local method=$1
@@ -332,14 +431,25 @@ _curl_json() {
     token=$(decrypt_sync_token)
 
     if [ -n "$body" ]; then
-        curl -sf --max-time 15 -X "$method" "${endpoint}${path}" \
+        curl -s --max-time 15 -X "$method" "${endpoint}${path}" \
             -H "Authorization: Bearer $token" \
             -H "Content-Type: application/json" \
             -d "$body"
     else
-        curl -sf --max-time 15 -X "$method" "${endpoint}${path}" \
+        curl -s --max-time 15 -X "$method" "${endpoint}${path}" \
             -H "Authorization: Bearer $token"
     fi
+}
+
+# Prints `.error` from a JSON API response, prefixed with some context, if present.
+# Returns 0 (an error was found and printed) / 1 (no error field).
+_print_api_error() {
+    local response="$1" context="$2"
+    if [ -n "$response" ] && echo "$response" | jq -e '.error' >/dev/null 2>&1; then
+        print_error "${context}: $(echo "$response" | jq -r '.error')"
+        return 0
+    fi
+    return 1
 }
 
 sync_login() {
@@ -413,6 +523,70 @@ sync_status() {
     echo
 }
 
+# Builds a JSON array of local connections for pushing.
+# Usage: _build_connections_json <match_directory_id> <mode>
+#   mode="all"    → every local connection, regardless of its tagged location
+#   mode anything else → only connections tagged with directory_id == match_directory_id
+#                         (empty match_directory_id = personal / "My Connections")
+_build_connections_json() {
+    local match_dir_id="$1" mode="$2"
+    local connections_json="[]"
+    local name username host port dir_id password entry
+    while IFS=: read -r name username host port dir_id; do
+        [ -n "$name" ] || continue
+        if [ "$mode" != "all" ] && [ "${dir_id:-}" != "$match_dir_id" ]; then
+            continue
+        fi
+        password=$(get_password "$name")
+        entry=$(jq -n --arg name "$name" --arg host "$host" --argjson port "$port" \
+            --arg username "$username" --arg password "$password" \
+            '{name: $name, host: $host, port: $port, username: $username, password: $password}')
+        connections_json=$(echo "$connections_json" | jq --argjson e "$entry" '. + [$e]')
+    done < "$CONFIG_FILE"
+    echo "$connections_json"
+}
+
+# Pushes one group of local connections to a single target location.
+# Usage: _sync_push_group <label> <target_directory_id> <mode>
+# (empty target_directory_id = personal; see _build_connections_json for mode)
+_sync_push_group() {
+    local label="$1" target_dir_id="$2" mode="$3"
+    local connections_json
+    connections_json=$(_build_connections_json "$target_dir_id" "$mode")
+    local count
+    count=$(echo "$connections_json" | jq 'length')
+    [ "$count" -gt 0 ] || return 0
+
+    local body
+    if [ -n "$target_dir_id" ]; then
+        body=$(jq -n --argjson connections "$connections_json" --arg dir "$target_dir_id" \
+            '{connections: $connections, directory_id: $dir}')
+    else
+        body=$(jq -n --argjson connections "$connections_json" '{connections: $connections}')
+    fi
+
+    local response
+    response=$(_curl_json POST "/api/cli/connections" "$body")
+    if [ -z "$response" ]; then
+        print_error "Push to ${label} failed — check your connection and token."
+        return 1
+    fi
+    if _print_api_error "$response" "Push to ${label}"; then
+        return 1
+    fi
+
+    local created updated conflicts
+    created=$(echo "$response" | jq -r '.created | length')
+    updated=$(echo "$response" | jq -r '.updated | length')
+    conflicts=$(echo "$response" | jq -r '.conflicts | length')
+
+    print_success "${label} — Created: ${created}  •  Updated: ${updated}  •  Conflicts: ${conflicts}"
+    if [ "$conflicts" -gt 0 ]; then
+        print_color "$YELLOW" "  Conflicting names (not overwritten remotely): $(echo "$response" | jq -r '.conflicts | join(", ")')"
+    fi
+    return 0
+}
+
 sync_push() {
     if ! is_sync_enabled; then
         print_error "Sync is not configured. Run 'nedara-connect sync login' first."
@@ -420,7 +594,7 @@ sync_push() {
     fi
     _check_sync_deps || exit 1
 
-    local directory_id=$1
+    local explicit_dir=$1
     print_header
     print_color "$PURPLE$BOLD" "☁️  Pushing local connections..."
     print_divider
@@ -431,40 +605,31 @@ sync_push() {
         return 0
     fi
 
-    local connections_json="[]"
-    while IFS=: read -r name username host port; do
-        local password entry
-        password=$(get_password "$name")
-        entry=$(jq -n --arg name "$name" --arg host "$host" --argjson port "$port" \
-            --arg username "$username" --arg password "$password" \
-            '{name: $name, host: $host, port: $port, username: $username, password: $password}')
-        connections_json=$(echo "$connections_json" | jq --argjson e "$entry" '. + [$e]')
-    done < "$CONFIG_FILE"
-
-    local body
-    if [ -n "$directory_id" ]; then
-        body=$(jq -n --argjson connections "$connections_json" --arg dir "$directory_id" \
-            '{connections: $connections, directory_id: $dir}')
+    if [ -n "$explicit_dir" ]; then
+        # Explicit target: push every local connection into this one
+        # directory, regardless of where each is otherwise tagged.
+        local role
+        role=$(_directory_role "$explicit_dir")
+        if [ "$role" = "read-only" ]; then
+            print_error "You only have read-only access to this directory — push refused."
+            echo
+            exit 1
+        fi
+        _sync_push_group "directory ${explicit_dir}" "$explicit_dir" "all"
     else
-        body=$(jq -n --argjson connections "$connections_json" '{connections: $connections}')
+        # Smart default: push everything to where it's tagged locally —
+        # "My Connections" plus each shared directory, in one go.
+        _sync_push_group "My Connections" "" "filter"
+        local dir_ids
+        dir_ids=$(cut -d: -f5 "$CONFIG_FILE" | grep -v '^$' | sort -u)
+        if [ -n "$dir_ids" ]; then
+            while IFS= read -r dir_id; do
+                [ -n "$dir_id" ] || continue
+                _sync_push_group "$(_directory_label "$dir_id")" "$dir_id" "filter"
+            done <<< "$dir_ids"
+        fi
     fi
 
-    local response
-    response=$(_curl_json POST "/api/cli/connections" "$body")
-    if [ -z "$response" ]; then
-        print_error "Push failed. Check your connection and token."
-        exit 1
-    fi
-
-    local created updated conflicts
-    created=$(echo "$response" | jq -r '.created | length')
-    updated=$(echo "$response" | jq -r '.updated | length')
-    conflicts=$(echo "$response" | jq -r '.conflicts | length')
-
-    print_success "Created: ${created}  •  Updated: ${updated}  •  Conflicts: ${conflicts}"
-    if [ "$conflicts" -gt 0 ]; then
-        print_color "$YELLOW" "  Conflicting names (not overwritten remotely): $(echo "$response" | jq -r '.conflicts | join(", ")')"
-    fi
     _sync_config_set "last_push" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo
 }
@@ -487,15 +652,21 @@ sync_pull() {
         print_error "Pull failed. Check your connection and token."
         exit 1
     fi
+    if _print_api_error "$response" "Pull"; then
+        exit 1
+    fi
+
+    # Recreate the "My Connections" + shared-directories grouping locally.
+    _write_directories_cache "$(echo "$response" | jq '[.directories[] | {id, name, org_name, role}]')"
 
     local added=0 skipped=0
-    while IFS=$'\t' read -r name host port username password; do
+    while IFS=$'\t' read -r name host port username password dir_id; do
         [ -n "$name" ] || continue
         if connection_exists "$name"; then
-            local existing existing_host existing_username
+            local existing existing_host existing_username existing_dir
             existing=$(grep "^$name:" "$CONFIG_FILE")
-            IFS=: read -r _ existing_username existing_host _ <<< "$existing"
-            if [ "$existing_host" = "$host" ] && [ "$existing_username" = "$username" ]; then
+            IFS=: read -r _ existing_username existing_host _ existing_dir <<< "$existing"
+            if [ "$existing_host" = "$host" ] && [ "$existing_username" = "$username" ] && [ "${existing_dir:-}" = "${dir_id:-}" ]; then
                 continue
             fi
             if [ "$force" != "--force" ]; then
@@ -506,15 +677,15 @@ sync_pull() {
             local tmp
             tmp=$(mktemp)
             grep -v "^$name:" "$CONFIG_FILE" > "$tmp"
-            echo "$name:$username:$host:$port" >> "$tmp"
+            echo "$name:$username:$host:$port:$dir_id" >> "$tmp"
             mv "$tmp" "$CONFIG_FILE"
             chmod 600 "$CONFIG_FILE"
         else
-            echo "$name:$username:$host:$port" >> "$CONFIG_FILE"
+            echo "$name:$username:$host:$port:$dir_id" >> "$CONFIG_FILE"
         fi
         [ -n "$password" ] && save_password "$name" "$password"
         added=$((added + 1))
-    done < <(echo "$response" | jq -r '(.personal + ([.directories[].connections[]?])) | .[] | [.name, .host, (.port|tostring), .username, (.password // "")] | @tsv')
+    done < <(echo "$response" | jq -r '(.personal + ([.directories[].connections[]?])) | .[] | [.name, .host, (.port|tostring), .username, (.password // ""), (.directory_id // "")] | @tsv')
 
     print_success "Pulled: ${added}  •  Skipped (conflicts): ${skipped}"
     _sync_config_set "last_pull" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -534,17 +705,29 @@ sync_directories() {
 
     local response
     response=$(_curl_json GET "/api/cli/directories")
-    if [ -z "$response" ] || [ "$(echo "$response" | jq 'length')" -eq 0 ]; then
+    if [ -z "$response" ]; then
+        print_error "Could not reach the server. Check your connection and token."
+        echo
+        exit 1
+    fi
+    if _print_api_error "$response" "Directories"; then
+        echo
+        exit 1
+    fi
+    if [ "$(echo "$response" | jq 'length')" -eq 0 ]; then
         print_info "No shared directories available to this account."
         echo
         return 0
     fi
 
-    echo "$response" | jq -r '.[] | "\(.id)\t\(.name)\t\(.org_name)"' | while IFS=$'\t' read -r id name org; do
-        echo -e "  ${CYAN}${id}${RESET}  ${WHITE}${BOLD}${name}${RESET} ${GRAY}(${org})${RESET}"
+    _write_directories_cache "$response"
+
+    echo "$response" | jq -r '.[] | "\(.id)\t\(.name)\t\(.org_name)\t\(.role)"' | while IFS=$'\t' read -r id name org role; do
+        echo -e "  ${CYAN}${id}${RESET}  ${WHITE}${BOLD}${name}${RESET} ${GRAY}(${org})${RESET}  ${DIM}[${role}]${RESET}"
     done
     echo
-    print_info "Push to a directory with: ${CYAN}nedara-connect sync push <directory-id>"
+    print_info "Connections already tagged with a location sync automatically with a plain ${CYAN}nedara-connect sync push${BLUE}."
+    print_info "To bulk-assign every local connection to one directory: ${CYAN}nedara-connect sync push <directory-id>"
     echo
 }
 
@@ -636,13 +819,44 @@ add_connection() {
         done
     fi
 
-    echo "$name:$username:$host:$port" >> "$CONFIG_FILE"
+    _prompt_location ""
+    local directory_id="$LOCATION_RESULT"
+
+    echo "$name:$username:$host:$port:$directory_id" >> "$CONFIG_FILE"
 
     echo
     print_divider
     print_success "Connection '$name' added successfully!"
     print_info "Details: ${CYAN}${username}@${host}:${port}"
+    print_info "Location: ${CYAN}$(_directory_label "$directory_id")"
     echo
+}
+
+# Prints one "My Connections" / directory section for `list_connections`,
+# incrementing the global _LIST_COUNT for each connection printed.
+_print_connection_group() {
+    local dir_id="$1" label="$2"
+    local lines
+    lines=$(_connections_in_group "$dir_id")
+    [ -n "$lines" ] || return 0
+
+    echo -e "  ${WHITE}${BOLD}📁 ${label}${RESET}"
+    echo
+    local name username host port _dir
+    while IFS=: read -r name username host port _dir; do
+        [ -n "$name" ] || continue
+        _LIST_COUNT=$((_LIST_COUNT + 1))
+        echo -e "  ${CYAN}${_LIST_COUNT}.${RESET} ${WHITE}${BOLD}${name}${RESET}"
+        echo -e "     ${GRAY}${ICON_USER} User:${RESET} ${GREEN}${username}${RESET}"
+        echo -e "     ${GRAY}${ICON_SERVER} Host:${RESET} ${BLUE}${host}${RESET}"
+        echo -e "     ${GRAY}${ICON_PORT} Port:${RESET} ${YELLOW}${port}${RESET}"
+        local stored_pass
+        stored_pass=$(get_password "$name")
+        if [ -n "$stored_pass" ]; then
+            echo -e "     ${GRAY}${ICON_LOCK} Password:${RESET} ${GREEN}(stored securely)${RESET}"
+        fi
+        echo
+    done <<< "$lines"
 }
 
 list_connections() {
@@ -657,24 +871,22 @@ list_connections() {
     print_header
     print_color "$GREEN$BOLD" "${ICON_SERVER} Available connections:"
     print_divider
+    echo
 
-    local count=0
-    while IFS=: read -r name username host port; do
-        count=$((count + 1))
-        echo -e "  ${CYAN}${count}.${RESET} ${WHITE}${BOLD}${name}${RESET}"
-        echo -e "     ${GRAY}${ICON_USER} User:${RESET} ${GREEN}${username}${RESET}"
-        echo -e "     ${GRAY}${ICON_SERVER} Host:${RESET} ${BLUE}${host}${RESET}"
-        echo -e "     ${GRAY}${ICON_PORT} Port:${RESET} ${YELLOW}${port}${RESET}"
-        local stored_pass
-        stored_pass=$(get_password "$name")
-        if [ -n "$stored_pass" ]; then
-            echo -e "     ${GRAY}${ICON_LOCK} Password:${RESET} ${GREEN}(stored securely)${RESET}"
-        fi
-        echo
-    done < "$CONFIG_FILE"
+    _LIST_COUNT=0
+    _print_connection_group "" "My Connections"
+
+    local dir_ids
+    dir_ids=$(cut -d: -f5 "$CONFIG_FILE" | grep -v '^$' | sort -u)
+    if [ -n "$dir_ids" ]; then
+        while IFS= read -r dir_id; do
+            [ -n "$dir_id" ] || continue
+            _print_connection_group "$dir_id" "$(_directory_label "$dir_id")"
+        done <<< "$dir_ids"
+    fi
 
     print_divider
-    print_info "Total: ${WHITE}${count}${BLUE} connection(s) configured"
+    print_info "Total: ${WHITE}${_LIST_COUNT}${BLUE} connection(s) configured"
     echo
 }
 
@@ -733,8 +945,8 @@ edit_connection() {
 
     local connection_details
     connection_details=$(grep "^$name:" "$CONFIG_FILE")
-    local cur_name cur_username cur_host cur_port
-    IFS=: read -r cur_name cur_username cur_host cur_port <<< "$connection_details"
+    local cur_name cur_username cur_host cur_port cur_dir_id
+    IFS=: read -r cur_name cur_username cur_host cur_port cur_dir_id <<< "$connection_details"
 
     print_header
     print_color "$PURPLE$BOLD" "✏️  Editing connection '$name'"
@@ -789,10 +1001,20 @@ edit_connection() {
         done
     fi
 
+    local directory_id="$cur_dir_id"
+    if [ -s "$DIRECTORIES_CACHE_FILE" ]; then
+        print_prompt "Move to a different location? (currently: $(_directory_label "$cur_dir_id")) [y/N] "
+        read -r move_loc
+        if [[ "$move_loc" =~ ^[Yy]$ ]]; then
+            _prompt_location "$cur_dir_id"
+            directory_id="$LOCATION_RESULT"
+        fi
+    fi
+
     local tmp
     tmp=$(mktemp)
     grep -v "^$name:" "$CONFIG_FILE" > "$tmp"
-    echo "$name:$username:$host:$port" >> "$tmp"
+    echo "$name:$username:$host:$port:$directory_id" >> "$tmp"
     mv "$tmp" "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
 
@@ -800,6 +1022,7 @@ edit_connection() {
     print_divider
     print_success "Connection '$name' updated successfully!"
     print_info "Details: ${CYAN}${username}@${host}:${port}"
+    print_info "Location: ${CYAN}$(_directory_label "$directory_id")"
     echo
 }
 
@@ -886,10 +1109,15 @@ show_help() {
     echo
     echo -e "  ${GREEN}${BOLD}nedara-connect sync login${RESET}        ${GRAY}# Connect this machine with a personal API token${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect sync status${RESET}       ${GRAY}# Show sync status${RESET}"
-    echo -e "  ${GREEN}${BOLD}nedara-connect sync push [dir-id]${RESET} ${GRAY}# Push local connections (optionally to a shared directory)${RESET}"
-    echo -e "  ${GREEN}${BOLD}nedara-connect sync pull [--force]${RESET} ${GRAY}# Pull remote connections (--force overwrites conflicts)${RESET}"
-    echo -e "  ${GREEN}${BOLD}nedara-connect sync directories${RESET}  ${GRAY}# List directories shared with you${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect sync push${RESET}         ${GRAY}# Push every local connection to its own location (My Connections + shared directories)${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect sync push <dir-id>${RESET} ${GRAY}# Push every local connection into one specific shared directory${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect sync pull [--force]${RESET} ${GRAY}# Pull remote connections, recreating My Connections + shared directories locally${RESET}"
+    echo -e "  ${GREEN}${BOLD}nedara-connect sync directories${RESET}  ${GRAY}# List directories shared with you, with your access level${RESET}"
     echo -e "  ${GREEN}${BOLD}nedara-connect sync logout${RESET}       ${GRAY}# Disable sync and remove the stored token${RESET}"
+    echo
+    print_color "$DIM" "  'add'/'edit' let you assign a connection to a shared directory once you've"
+    print_color "$DIM" "  pulled/listed them at least once. Pushing to a directory requires read-write"
+    print_color "$DIM" "  access there; deleting a shared connection requires read-write-delete."
     echo
     print_color "$CYAN$BOLD" "EXAMPLES:"
     echo
@@ -904,6 +1132,7 @@ show_help() {
     print_info "Encryption key in:       ${CYAN}${KEY_FILE} (keep this safe!)"
     print_info "Sync config in:          ${CYAN}${SYNC_CONFIG_FILE} (only created if you use sync)"
     print_info "Sync token in:           ${CYAN}${SYNC_TOKEN_FILE} (encrypted, only created if you use sync)"
+    print_info "Known directories in:    ${CYAN}${DIRECTORIES_CACHE_FILE} (only created if you use sync)"
     echo
 }
 
@@ -1008,7 +1237,7 @@ _tui_header() {
     clear
     echo
     print_color "$CYAN$BOLD" "  ╭─────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.5.0${CYAN}             │"
+    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.6.0${CYAN}             │"
     if [ -n "$sub" ]; then
         printf "${CYAN}${BOLD}  │  ${WHITE}%-43s${CYAN}│${RESET}\n" "$sub"
     fi
@@ -1027,12 +1256,21 @@ _tui_menu() {
         values+=("$1"); labels+=("$2"); shift 2
     done
 
-    local selected=0 n=${#values[@]} key
+    local n=${#values[@]} key
+    local selected=0
+    # A value of "__header__" is a non-selectable section title (used to
+    # group entries, e.g. "My Connections" vs. shared directories). Start
+    # on the first selectable entry.
+    while [ "$selected" -lt "$n" ] && [ "${values[$selected]}" = "__header__" ]; do
+        selected=$((selected + 1))
+    done
 
     while true; do
         _tui_header "$sub"
         for i in "${!values[@]}"; do
-            if [ "$i" -eq "$selected" ]; then
+            if [ "${values[$i]}" = "__header__" ]; then
+                echo -e "  ${CYAN}${BOLD}${labels[$i]}${RESET}"
+            elif [ "$i" -eq "$selected" ]; then
                 echo -e "  ${GREEN}${BOLD}▶  ${labels[$i]}${RESET}"
             else
                 echo -e "  ${GRAY}   ${labels[$i]}${RESET}"
@@ -1043,12 +1281,59 @@ _tui_menu() {
 
         key=$(_tui_read_key)
         case "$key" in
-            $'\x1b[A'|$'\x1bOA') [ "$selected" -gt 0 ]        && selected=$((selected - 1)) ;;
-            $'\x1b[B'|$'\x1bOB') [ "$selected" -lt $((n-1)) ] && selected=$((selected + 1)) ;;
-            ''|$'\n'|$'\r')  TUI_RESULT="${values[$selected]}"; return 0 ;;
+            $'\x1b[A'|$'\x1bOA')
+                local i=$selected
+                while [ "$i" -gt 0 ]; do
+                    i=$((i - 1))
+                    if [ "${values[$i]}" != "__header__" ]; then selected=$i; break; fi
+                done
+                ;;
+            $'\x1b[B'|$'\x1bOB')
+                local i=$selected
+                while [ "$i" -lt $((n - 1)) ]; do
+                    i=$((i + 1))
+                    if [ "${values[$i]}" != "__header__" ]; then selected=$i; break; fi
+                done
+                ;;
+            ''|$'\n'|$'\r')
+                [ "${values[$selected]}" = "__header__" ] && continue
+                TUI_RESULT="${values[$selected]}"; return 0 ;;
             'q'|'Q'|$'\x1b'|$'\x03') TUI_RESULT=""; return 1 ;;
         esac
     done
+}
+
+# Populates the global array _MENU_ARGS with alternating value/label pairs for
+# _tui_menu, grouped by location ("My Connections" first, then each shared
+# directory), using "__header__" as a non-selectable section title.
+_build_connection_menu_args() {
+    _MENU_ARGS=()
+    local group_dir_id group_label lines name username host port _dir
+
+    for group_dir_id in "" $(cut -d: -f5 "$CONFIG_FILE" 2>/dev/null | grep -v '^$' | sort -u); do
+        lines=$(_connections_in_group "$group_dir_id")
+        [ -n "$lines" ] || continue
+        group_label="$(_directory_label "$group_dir_id")"
+        _MENU_ARGS+=("__header__" "── ${group_label} ──")
+        while IFS=: read -r name username host port _dir; do
+            [ -n "$name" ] || continue
+            _MENU_ARGS+=("$name" "$name  ($username@$host:$port)")
+        done <<< "$lines"
+    done
+}
+
+# Location picker for the TUI. Sets TUI_RESULT to the chosen directory_id
+# ("" = My Connections). Only shown if directories are known locally (i.e.
+# sync has been used at least once) — returns 1 without prompting otherwise.
+_tui_pick_location() {
+    [ -s "$DIRECTORIES_CACHE_FILE" ] || return 1
+    local -a args=("" "My Connections")
+    local id name org role
+    while IFS=: read -r id name org role; do
+        [ -n "$id" ] || continue
+        args+=("$id" "$name ($org)")
+    done < "$DIRECTORIES_CACHE_FILE"
+    _tui_menu "Choose a location" "${args[@]}"
 }
 
 # Single-line text prompt. Result stored in TUI_RESULT.
@@ -1095,12 +1380,8 @@ _tui_connect() {
         return
     fi
 
-    local -a args=()
-    while IFS=: read -r name username host port; do
-        args+=("$name" "$name  ($username@$host:$port)")
-    done < "$CONFIG_FILE"
-
-    _tui_menu "Connect to a host" "${args[@]}" || return
+    _build_connection_menu_args
+    _tui_menu "Connect to a host" "${_MENU_ARGS[@]}" || return
     local choice="$TUI_RESULT"
 
     clear
@@ -1158,10 +1439,16 @@ _tui_add() {
         done
     fi
 
-    echo "$name:$username:$host:$port" >> "$CONFIG_FILE"
+    local directory_id=""
+    if _tui_pick_location; then
+        directory_id="$TUI_RESULT"
+    fi
+
+    echo "$name:$username:$host:$port:$directory_id" >> "$CONFIG_FILE"
     echo
     print_success "Connection '$name' added!"
     print_info "  $username@$host:$port"
+    print_info "  Location: $(_directory_label "$directory_id")"
     echo
     print_color "$DIM" "  Press any key to continue..."
     IFS= read -rsn1 </dev/tty
@@ -1180,15 +1467,24 @@ _tui_list() {
     fi
 
     local count=0
-    while IFS=: read -r name username host port; do
-        count=$((count + 1))
-        local stored_pass
-        stored_pass=$(get_password "$name")
-        echo -e "  ${CYAN}${BOLD}${count}.${RESET} ${WHITE}${BOLD}${name}${RESET}"
-        echo -e "     ${GRAY}User:${RESET} ${GREEN}${username}${RESET}  ${GRAY}Host:${RESET} ${BLUE}${host}${RESET}  ${GRAY}Port:${RESET} ${YELLOW}${port}${RESET}"
-        [ -n "$stored_pass" ] && echo -e "     ${GRAY}${ICON_LOCK} Password stored securely${RESET}"
-        echo
-    done < "$CONFIG_FILE"
+    local group_dir_id group_label lines name username host port _dir
+
+    for group_dir_id in "" $(cut -d: -f5 "$CONFIG_FILE" 2>/dev/null | grep -v '^$' | sort -u); do
+        lines=$(_connections_in_group "$group_dir_id")
+        [ -n "$lines" ] || continue
+        group_label="$(_directory_label "$group_dir_id")"
+        echo -e "  ${CYAN}${BOLD}📁 ${group_label}${RESET}"
+        while IFS=: read -r name username host port _dir; do
+            [ -n "$name" ] || continue
+            count=$((count + 1))
+            local stored_pass
+            stored_pass=$(get_password "$name")
+            echo -e "  ${CYAN}${BOLD}${count}.${RESET} ${WHITE}${BOLD}${name}${RESET}"
+            echo -e "     ${GRAY}User:${RESET} ${GREEN}${username}${RESET}  ${GRAY}Host:${RESET} ${BLUE}${host}${RESET}  ${GRAY}Port:${RESET} ${YELLOW}${port}${RESET}"
+            [ -n "$stored_pass" ] && echo -e "     ${GRAY}${ICON_LOCK} Password stored securely${RESET}"
+            echo
+        done <<< "$lines"
+    done
 
     print_divider
     print_info "Total: ${WHITE}${count}${BLUE} connection(s)"
@@ -1203,12 +1499,8 @@ _tui_delete() {
         return
     fi
 
-    local -a args=()
-    while IFS=: read -r name username host port; do
-        args+=("$name" "$name  ($username@$host:$port)")
-    done < "$CONFIG_FILE"
-
-    _tui_menu "Delete a connection" "${args[@]}" || return
+    _build_connection_menu_args
+    _tui_menu "Delete a connection" "${_MENU_ARGS[@]}" || return
     local choice="$TUI_RESULT"
 
     _tui_header "Confirm Delete"
@@ -1238,18 +1530,14 @@ _tui_edit() {
         return
     fi
 
-    local -a args=()
-    while IFS=: read -r name username host port; do
-        args+=("$name" "$name  ($username@$host:$port)")
-    done < "$CONFIG_FILE"
-
-    _tui_menu "Edit a connection" "${args[@]}" || return
+    _build_connection_menu_args
+    _tui_menu "Edit a connection" "${_MENU_ARGS[@]}" || return
     local choice="$TUI_RESULT"
 
     local connection_details
     connection_details=$(grep "^$choice:" "$CONFIG_FILE")
-    local cur_name cur_username cur_host cur_port
-    IFS=: read -r cur_name cur_username cur_host cur_port <<< "$connection_details"
+    local cur_name cur_username cur_host cur_port cur_dir_id
+    IFS=: read -r cur_name cur_username cur_host cur_port cur_dir_id <<< "$connection_details"
 
     _tui_header "Edit: $choice"
     print_color "$DIM" "  Press Enter to keep the current value."
@@ -1298,16 +1586,24 @@ _tui_edit() {
         done
     fi
 
+    local directory_id="$cur_dir_id"
+    if [ -s "$DIRECTORIES_CACHE_FILE" ] && _tui_yesno "Move to a different location? (currently: $(_directory_label "$cur_dir_id"))"; then
+        if _tui_pick_location; then
+            directory_id="$TUI_RESULT"
+        fi
+    fi
+
     local tmp
     tmp=$(mktemp)
     grep -v "^$choice:" "$CONFIG_FILE" > "$tmp"
-    echo "$choice:$username:$host:$port" >> "$tmp"
+    echo "$choice:$username:$host:$port:$directory_id" >> "$tmp"
     mv "$tmp" "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
 
     echo
     print_success "Connection '$choice' updated!"
     print_info "  $username@$host:$port"
+    print_info "  Location: $(_directory_label "$directory_id")"
     echo
     print_color "$DIM" "  Press any key to continue..."
     IFS= read -rsn1 </dev/tty
