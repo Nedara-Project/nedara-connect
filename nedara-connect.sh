@@ -1,13 +1,13 @@
 #!/bin/bash
 # :project:    Nedara Connect
-# :version:    0.6.0
+# :version:    0.6.1
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
 # :repository: https://github.com/Nedara-Project/nedara-connect
 # :overview:   Nedara-connect is a lightweight shell tool for managing and connecting to SSH hosts
 # :published:  2025-04-08
-# :modified:   2026-07-13
+# :modified:   2026-07-14
 
 # Configuration
 CONFIG_FILE="$HOME/.ssh/connections.conf"
@@ -70,7 +70,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.6.0${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.6.1${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
@@ -1046,8 +1046,8 @@ connect() {
         exit 1
     fi
 
-    local name username host port
-    IFS=: read -r name username host port <<< "$connection_details"
+    local name username host port dir_id
+    IFS=: read -r name username host port dir_id <<< "$connection_details"
 
     local password
     password=$(get_password "$name")
@@ -1237,7 +1237,7 @@ _tui_header() {
     clear
     echo
     print_color "$CYAN$BOLD" "  ╭─────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.6.0${CYAN}             │"
+    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.6.1${CYAN}             │"
     if [ -n "$sub" ]; then
         printf "${CYAN}${BOLD}  │  ${WHITE}%-43s${CYAN}│${RESET}\n" "$sub"
     fi
