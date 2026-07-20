@@ -1,13 +1,13 @@
 #!/bin/bash
 # :project:    Nedara Connect
-# :version:    0.6.1
+# :version:    0.6.2
 # :license:    MIT
 # :copyright:  (c) 2025 Nedara Project
 # :author:     Andrea Ulliana
 # :repository: https://github.com/Nedara-Project/nedara-connect
 # :overview:   Nedara-connect is a lightweight shell tool for managing and connecting to SSH hosts
 # :published:  2025-04-08
-# :modified:   2026-07-14
+# :modified:   2026-07-20
 
 # Configuration
 CONFIG_FILE="$HOME/.ssh/connections.conf"
@@ -70,7 +70,7 @@ print_color() {
 print_header() {
     echo
     print_color "$CYAN$BOLD" "╭─────────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.6.1${CYAN}              │"
+    print_color "$CYAN$BOLD" "│           ${WHITE}🚀 NEDARA CONNECT v0.6.2${CYAN}              │"
     print_color "$CYAN$BOLD" "│            ${DIM}${WHITE}SSH Connection Manager${CYAN}               │"
     print_color "$CYAN$BOLD" "╰─────────────────────────────────────────────────╯"
     echo
@@ -1074,14 +1074,23 @@ connect() {
             print_info "Please install sshpass or connect without saved password"
             exit 1
         fi
-        SSHPASS="$password" sshpass -e ssh -p "$port" "$username@$host"
+        # accept-new: auto-trust a host's key on first contact (TOFU), same as
+        # answering "yes" manually — required because sshpass can't answer the
+        # "Are you sure you want to continue connecting" prompt itself, which
+        # otherwise silently kills the connection on any never-before-seen host.
+        SSHPASS="$password" sshpass -e ssh -o StrictHostKeyChecking=accept-new -p "$port" "$username@$host"
     else
-        ssh -p "$port" "$username@$host"
+        ssh -o StrictHostKeyChecking=accept-new -p "$port" "$username@$host"
     fi
+    local ssh_status=$?
 
     echo
     print_divider
-    print_info "Connection closed"
+    if [ "$ssh_status" -ne 0 ]; then
+        print_error "SSH exited with an error (code $ssh_status)"
+    else
+        print_info "Connection closed"
+    fi
     echo
 }
 
@@ -1237,7 +1246,7 @@ _tui_header() {
     clear
     echo
     print_color "$CYAN$BOLD" "  ╭─────────────────────────────────────────────╮"
-    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.6.1${CYAN}             │"
+    print_color "$CYAN$BOLD" "  │        ${WHITE}🚀 NEDARA CONNECT v0.6.2${CYAN}             │"
     if [ -n "$sub" ]; then
         printf "${CYAN}${BOLD}  │  ${WHITE}%-43s${CYAN}│${RESET}\n" "$sub"
     fi
@@ -1386,6 +1395,9 @@ _tui_connect() {
 
     clear
     connect "$choice"
+
+    print_color "$DIM" "  Press any key to continue..."
+    IFS= read -rsn1 </dev/tty
 }
 
 _tui_add() {
